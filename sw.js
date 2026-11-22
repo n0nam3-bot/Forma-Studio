@@ -1,9 +1,9 @@
-const CACHE_NAME = 'forma-studio-asymmetric-anatomy-v9';
+const CACHE_NAME = 'forma-studio-auto-cutout-v8';
 const APP_FILES = [
   './', './index.html', './bootstrap.js', './styles.css',
   './workspace-ui.css', './workspace-ui.js', './src/main.js',
-  './src/skeleton-helper-compat.js', './src/visual-hull.js?v=9',
-  './src/reference-cutout.js?v=9', './src/model.js', './src/motion.js',
+  './src/skeleton-helper-compat.js', './src/visual-hull.js?v=8',
+  './src/reference-cutout.js?v=8', './src/model.js', './src/motion.js',
   './src/persistence.js',
 ];
 const THREE_PREFIXES = [
@@ -146,9 +146,6 @@ const isoSurfaceFunction = String.raw`function createIsoSurfaceGeometry(THREE, g
     let total=0; const colour=[0,0,0];
     for (const view of views) {
       const facing=nxv*view.direction.x+nzv*view.direction.z;
-      // Only project a side reference onto the lateral half facing that camera.
-      // The opposite half receives front-view colour or a neutral inferred finish.
-      if (Math.abs(view.direction.x) > 0.82 && x * view.direction.x < -0.01) continue;
       if (facing<=0.025) continue;
       const sampled=sampleViewColor(view,x,y,z);
       if (!sampled) continue;
@@ -156,13 +153,6 @@ const isoSurfaceFunction = String.raw`function createIsoSurfaceGeometry(THREE, g
       colour[0]+=srgbToLinear(sampled[0])*weight;
       colour[1]+=srgbToLinear(sampled[1])*weight;
       colour[2]+=srgbToLinear(sampled[2])*weight;
-    }
-    if (total <= 0.0001) {
-      const frontView = views.find(view => view.reference.role === 'front');
-      const frontal = frontView ? sampleViewColor(frontView,x,y,z) : null;
-      if (frontal) {
-        colour[0]=srgbToLinear(frontal[0]); colour[1]=srgbToLinear(frontal[1]); colour[2]=srgbToLinear(frontal[2]); total=1;
-      }
     }
     const out=total>0.0001?colour.map(value=>value/total):fallback;
     colors[i*3]=out[0]; colors[i*3+1]=out[1]; colors[i*3+2]=out[2];
@@ -182,160 +172,7 @@ const isoSurfaceFunction = String.raw`function createIsoSurfaceGeometry(THREE, g
   return geometry;
 }`;
 
-const newInstallWorkflow = "export function installVisualHullWorkflow(THREE, { state, onReconstructed }) {\n  const panel = document.querySelector('.reference-panel');\n  const originalFit = document.querySelector('#fitReferences');\n  if (!panel || !originalFit || originalFit.dataset.visualHullInstalled === 'true') return;\n  originalFit.dataset.visualHullInstalled = 'true';\n  const fitButton = originalFit.cloneNode(true);\n  fitButton.id = 'fitReferences';\n  fitButton.textContent = 'Reconstruct 3D character mesh';\n  originalFit.replaceWith(fitButton);\n\n  if (!document.querySelector('#vhAutoCutoutStyles')) {\n    const style = document.createElement('style');\n    style.id = 'vhAutoCutoutStyles';\n    style.textContent = '.vh-auto-cutout-note{font-size:10px;color:#a8b6c5;margin:8px 0;padding:8px 10px;border:1px solid #354151;border-radius:8px;background:#111a24}.vh-progress{height:5px;border-radius:10px;background:#273241;overflow:hidden;margin:8px 0}.vh-progress>span{display:block;height:100%;width:0;background:#c9f36a;transition:width .15s}.vh-status{font:9px monospace;line-height:1.5;color:#aecb77;min-height:16px;margin:5px 0}';\n    document.head.appendChild(style);\n  }\n  const autoNote = document.createElement('div');\n  autoNote.className = 'vh-auto-cutout-note';\n  autoNote.textContent = 'Background removal: automatic · Add both side profiles to capture asymmetry; a missing side uses a neutral anatomy estimate, not copied side pixels.';\n  fitButton.insertAdjacentElement('beforebegin', autoNote);\n  const progressWrap = document.createElement('div');\n  progressWrap.className = 'vh-progress';\n  progressWrap.innerHTML = '<span id=\"vhProgressBar\"></span>';\n  fitButton.insertAdjacentElement('afterend', progressWrap);\n  const progressText = document.createElement('div');\n  progressText.className = 'vh-status';\n  progressText.id = 'vhProgressText';\n  progressText.textContent = 'Add a Front view and at least one Side (facing left or right) view. Add the opposite side when the character is asymmetrical.';\n  progressWrap.insertAdjacentElement('afterend', progressText);\n\n  fitButton.addEventListener('click', async () => {\n    if (fitButton.disabled) return;\n    fitButton.disabled = true;\n    fitButton.textContent = 'Reconstructing rounded 3D surface…';\n    const bar = document.querySelector('#vhProgressBar');\n    const setProgress = (value, message) => {\n      if (bar) bar.style.width = `${Math.round(value * 100)}%`;\n      progressText.textContent = `${Math.round(value * 100)}% · ${message}`;\n    };\n    try {\n      const geometry = await buildVisualHull(THREE, state.references, setProgress);\n      onReconstructed(geometry);\n      const info = geometry.userData.formaReconstruction;\n      setProgress(1, `Complete · ${info.views.length} views · ${info.vertexCount.toLocaleString()} vertices · ${info.triangleCount.toLocaleString()} triangles.`);\n      toast('Side-aware 3D surface reconstructed. An unprovided opposite side uses a neutral anatomical estimate; supply both sides for asymmetry.', 'success', 6500);\n    } catch (error) {\n      progressText.textContent = `Reconstruction stopped · ${error.message}`;\n      toast(error.message || 'Could not reconstruct this character.', 'error', 6500);\n    } finally {\n      fitButton.disabled = false;\n      fitButton.textContent = 'Reconstruct 3D character mesh';\n    }\n  });\n}";
-
-const anatomyOccupancyFunction = String.raw`async function buildOccupancy(views, settings, onProgress) {
-  const { nx, ny, nz } = settings;
-  const { halfX, halfZ } = estimateExtents(views);
-  const dx = 2 * halfX / nx, dy = CHARACTER_HEIGHT / ny, dz = 2 * halfZ / nz;
-  const occupancy = new Uint8Array(nx * ny * nz);
-  const indexOf = (x, y, z) => (z * ny + y) * nx + x;
-  const front = views.find(view => view.reference.role === 'front');
-  if (!front) throw new Error('A Front reference is required to establish the character width and limb placement.');
-  const sideViews = views.filter(view => Math.abs(view.direction.x) > 0.82 && Math.abs(view.direction.z) < 0.58);
-  if (!sideViews.length) throw new Error('Add at least one direction-labelled side profile.');
-  const auxiliaryViews = views.filter(view => view !== front && !sideViews.includes(view));
-
-  const ellipsoid = (x, y, z, cx, cy, cz, rx, ry, rz) => {
-    const a=(x-cx)/rx, b=(y-cy)/ry, c=(z-cz)/rz;
-    return a*a+b*b+c*c <= 1;
-  };
-  const capsule = (x, y, z, ax, ay, az, bx, by, bz, radius) => {
-    const dx=bx-ax, dy=by-ay, dz=bz-az;
-    const length=dx*dx+dy*dy+dz*dz || 1;
-    const t=clamp(((x-ax)*dx+(y-ay)*dy+(z-az)*dz)/length,0,1);
-    const px=ax+t*dx, py=ay+t*dy, pz=az+t*dz;
-    const ox=x-px, oy=y-py, oz=z-pz;
-    return ox*ox+oy*oy+oz*oz <= radius*radius;
-  };
-  const capsule2D = (x, y, ax, ay, bx, by, radius) => {
-    const dx=bx-ax, dy=by-ay, length=dx*dx+dy*dy || 1;
-    const t=clamp(((x-ax)*dx+(y-ay)*dy)/length,0,1);
-    const ox=x-(ax+t*dx), oy=y-(ay+t*dy);
-    return ox*ox+oy*oy <= radius*radius;
-  };
-  const isArmPlane = (x,y) => {
-    for (const sign of [-1,1]) {
-      const shoulder=sign*.235, elbow=sign*.53, wrist=sign*.795;
-      if (capsule2D(x,y,shoulder,1.425,elbow,1.18,.12) ||
-          capsule2D(x,y,elbow,1.18,wrist,.99,.105) ||
-          ellipsoid(x,y,0,wrist,.94,0,.085,.105,.2)) return true;
-    }
-    return false;
-  };
-  const isLegPlane = (x,y) => {
-    for (const sign of [-1,1]) {
-      if (capsule2D(x,y,sign*.105,.90,sign*.117,.535,.145) ||
-          capsule2D(x,y,sign*.117,.535,sign*.12,.15,.115) ||
-          ellipsoid(x,y,0,sign*.12,.09,0,.11,.09,.2)) return true;
-    }
-    return false;
-  };
-  const anatomyContains = (x, y, z) => {
-    // Soft, deliberately neutral human volume for regions not visible in the
-    // supplied side photograph. It is not copied from the visible side.
-    if (ellipsoid(x,y,z,0,.94,0,.205,.145,.132) ||
-        ellipsoid(x,y,z,0,1.105,0,.158,.175,.112) ||
-        ellipsoid(x,y,z,0,1.325,0,.205,.235,.139) ||
-        ellipsoid(x,y,z,0,1.49,0,.066,.10,.068) ||
-        ellipsoid(x,y,z,0,1.70,0,.135,.16,.12) ||
-        ellipsoid(x,y,z,0,1.775,-.005,.145,.075,.128) ||
-        ellipsoid(x,y,z,0,1.685,.137,.028,.03,.048) ||
-        ellipsoid(x,y,z,0,1.715,.112,.022,.045,.035) ||
-        ellipsoid(x,y,z,-.045,1.685,.095,.048,.048,.038) ||
-        ellipsoid(x,y,z,.045,1.685,.095,.048,.048,.038) ||
-        ellipsoid(x,y,z,0,1.635,.075,.075,.05,.067)) return true;
-    for (const sign of [-1,1]) {
-      const shoulder=sign*.235, elbow=sign*.53, wrist=sign*.795;
-      if (capsule(x,y,z,shoulder,1.425,.018,elbow,1.18,.018,.086) ||
-          capsule(x,y,z,elbow,1.18,.018,wrist,.99,.018,.071) ||
-          ellipsoid(x,y,z,wrist,.94,.018,.056,.087,.061) ||
-          capsule(x,y,z,sign*.105,.90,0,sign*.117,.535,0,.108) ||
-          capsule(x,y,z,sign*.117,.535,0,sign*.12,.15,0,.078) ||
-          ellipsoid(x,y,z,sign*.12,.09,.095,.085,.068,.155)) return true;
-      if (ellipsoid(x,y,z,sign*.126,1.69,.012,.027,.048,.042)) return true;
-    }
-    return false;
-  };
-  const isArmCorridor = (x, y, z) => {
-    for (const sign of [-1,1]) {
-      const shoulder=sign*.235, elbow=sign*.53, wrist=sign*.795;
-      if (capsule(x,y,z,shoulder,1.425,.018,elbow,1.18,.018,.098) ||
-          capsule(x,y,z,elbow,1.18,.018,wrist,.99,.018,.084) ||
-          ellipsoid(x,y,z,wrist,.94,.018,.067,.095,.076)) return true;
-    }
-    return false;
-  };
-  const isLegCorridor = (x, y, z) => {
-    for (const sign of [-1,1]) {
-      if (capsule(x,y,z,sign*.105,.90,0,sign*.117,.535,0,.122) ||
-          capsule(x,y,z,sign*.117,.535,0,sign*.12,.15,0,.09) ||
-          ellipsoid(x,y,z,sign*.12,.09,.095,.096,.078,.17)) return true;
-    }
-    return false;
-  };
-  const isFaceCore = (x, y, z) =>
-    ellipsoid(x,y,z,0,1.70,0,.135,.16,.12) ||
-    ellipsoid(x,y,z,0,1.775,-.005,.145,.075,.128) ||
-    ellipsoid(x,y,z,0,1.685,.137,.028,.03,.048) ||
-    ellipsoid(x,y,z,0,1.715,.112,.022,.045,.035) ||
-    ellipsoid(x,y,z,-.045,1.685,.095,.048,.048,.038) ||
-    ellipsoid(x,y,z,.045,1.685,.095,.048,.048,.038) ||
-    ellipsoid(x,y,z,0,1.635,.075,.075,.05,.067) ||
-    ellipsoid(x,y,z,-.126,1.69,.012,.027,.048,.042) ||
-    ellipsoid(x,y,z,.126,1.69,.012,.027,.048,.042);
-
-  let filled = 0;
-  for (let z = 0; z < nz; z++) {
-    const worldZ = -halfZ + (z + 0.5) * dz;
-    for (let y = 0; y < ny; y++) {
-      const worldY = (y + 0.5) * dy;
-      for (let x = 0; x < nx; x++) {
-        const worldX = -halfX + (x + 0.5) * dx;
-        // Front and auxiliary/back views constrain the whole body.
-        let inside = insideView(front, worldX, worldY, worldZ);
-        if (inside) for (const view of auxiliaryViews) {
-          if (!insideView(view, worldX, worldY, worldZ)) { inside=false; break; }
-        }
-        if (inside) {
-          // A side camera constrains only the lateral half it physically sees.
-          // If no opposite-side image exists, use an anatomical prior on that
-          // hidden half rather than mirroring the supplied side silhouette.
-          const sideView = sideViews.find(view => worldX * view.direction.x >= -0.0001);
-          if (sideView) inside = insideView(sideView, worldX, worldY, worldZ);
-          else inside = anatomyContains(worldX,worldY,worldZ);
-        }
-        if (inside) {
-          // Separate sleeves/arms and legs from the torso's extruded silhouette.
-          // This gives each limb a round cross-section with actual depth.
-          const absX=Math.abs(worldX);
-          if (inside && worldY >= .99 && worldY <= 1.49 && absX >= .15 && absX <= .91 && isArmPlane(worldX,worldY)) {
-            inside = isArmCorridor(worldX,worldY,worldZ);
-          }
-          if (inside && worldY >= .055 && worldY <= .94 && absX >= .035 && absX <= .27 && isLegPlane(worldX,worldY)) {
-            inside = isLegCorridor(worldX,worldY,worldZ);
-          }
-        }
-        // A small forward-facing facial volume makes the nose/bridge a real
-        // protrusion instead of only a side-view colour cutout. It is clipped
-        // to the front silhouette and the corresponding side profile when seen.
-        if (inside && worldY >= 1.62 && worldY <= 1.745 && Math.abs(worldX) <= .14) inside = isFaceCore(worldX,worldY,worldZ);
-        if (!inside && worldY >= 1.64 && worldY <= 1.75 && Math.abs(worldX) <= .035 && worldZ > .105 &&
-            insideView(front,worldX,worldY,worldZ) && isFaceCore(worldX,worldY,worldZ)) {
-          const sideView=sideViews.find(view=>worldX*view.direction.x>=-0.0001);
-          if (!sideView || insideView(sideView,worldX,worldY,worldZ)) inside=true;
-        }
-        if (inside) { occupancy[indexOf(x,y,z)] = 1; filled++; }
-      }
-    }
-    if (z % 4 === 0) {
-      onProgress?.(0.12 + 0.48 * (z + 1) / nz, 'Building side-aware anatomy and intersecting ' + views.length + ' reference views…');
-      await new Promise(resolve => requestAnimationFrame(resolve));
-    }
-  }
-  if (filled < 500) throw new Error('The view masks do not overlap into a usable 3D volume. Check the side direction and reference silhouettes.');
-  return { occupancy, indexOf, nx, ny, nz, halfX, halfZ, dx, dy, dz, filled };
-}`;
+const newInstallWorkflow = "export function installVisualHullWorkflow(THREE, { state, onReconstructed }) {\n  const panel = document.querySelector('.reference-panel');\n  const originalFit = document.querySelector('#fitReferences');\n  if (!panel || !originalFit || originalFit.dataset.visualHullInstalled === 'true') return;\n  originalFit.dataset.visualHullInstalled = 'true';\n  const fitButton = originalFit.cloneNode(true);\n  fitButton.id = 'fitReferences';\n  fitButton.textContent = 'Reconstruct 3D character mesh';\n  originalFit.replaceWith(fitButton);\n\n  if (!document.querySelector('#vhAutoCutoutStyles')) {\n    const style = document.createElement('style');\n    style.id = 'vhAutoCutoutStyles';\n    style.textContent = '.vh-auto-cutout-note{font-size:10px;color:#a8b6c5;margin:8px 0;padding:8px 10px;border:1px solid #354151;border-radius:8px;background:#111a24}.vh-progress{height:5px;border-radius:10px;background:#273241;overflow:hidden;margin:8px 0}.vh-progress>span{display:block;height:100%;width:0;background:#c9f36a;transition:width .15s}.vh-status{font:9px monospace;line-height:1.5;color:#aecb77;min-height:16px;margin:5px 0}';\n    document.head.appendChild(style);\n  }\n  const autoNote = document.createElement('div');\n  autoNote.className = 'vh-auto-cutout-note';\n  autoNote.textContent = 'Background removal: automatic \u00b7 Front + either side direction; add both sides for asymmetry.';\n  fitButton.insertAdjacentElement('beforebegin', autoNote);\n  const progressWrap = document.createElement('div');\n  progressWrap.className = 'vh-progress';\n  progressWrap.innerHTML = '<span id=\"vhProgressBar\"></span>';\n  fitButton.insertAdjacentElement('afterend', progressWrap);\n  const progressText = document.createElement('div');\n  progressText.className = 'vh-status';\n  progressText.id = 'vhProgressText';\n  progressText.textContent = 'Add a Front view and at least one Side (facing left or right) view. Add the opposite side when the character is asymmetrical.';\n  progressWrap.insertAdjacentElement('afterend', progressText);\n\n  fitButton.addEventListener('click', async () => {\n    if (fitButton.disabled) return;\n    fitButton.disabled = true;\n    fitButton.textContent = 'Reconstructing rounded 3D surface\u2026';\n    const bar = document.querySelector('#vhProgressBar');\n    const setProgress = (value, message) => {\n      if (bar) bar.style.width = `${Math.round(value * 100)}%`;\n      progressText.textContent = `${Math.round(value * 100)}% \u00b7 ${message}`;\n    };\n    try {\n      const geometry = await buildVisualHull(THREE, state.references, setProgress);\n      onReconstructed(geometry);\n      const info = geometry.userData.formaReconstruction;\n      setProgress(1, `Complete \u00b7 ${info.views.length} views \u00b7 ${info.vertexCount.toLocaleString()} vertices \u00b7 ${info.triangleCount.toLocaleString()} triangles.`);\n      toast('Rounded 3D surface reconstructed and bound to the character rig. Review the silhouette in the viewport.', 'success', 6500);\n    } catch (error) {\n      progressText.textContent = `Reconstruction stopped \u00b7 ${error.message}`;\n      toast(error.message || 'Could not reconstruct this character.', 'error', 6500);\n    } finally {\n      fitButton.disabled = false;\n      fitButton.textContent = 'Reconstruct 3D character mesh';\n    }\n  });\n}";
 
 function patchVisualHullModule(source) {
   source = source.replace(
@@ -360,7 +197,6 @@ function patchVisualHullModule(source) {
     "  const requiredSide = references.some(reference => ['sideFacingLeft','sideFacingRight','side','sideOpposite'].includes(reference.role));"
   );
   source = source.replace("Upload separate Front and Side views first. A single picture cannot define a 3D volume.", "Upload a Front view and at least one Side view labelled facing left or facing right. Add both side views to capture asymmetry.");
-  source = source.replace(/async function buildOccupancy\(views, settings, onProgress\) \{[\s\S]*?\n\}/, anatomyOccupancyFunction);
   source = source.replace(
     'function createSurfaceGeometry(THREE, grid, views, onProgress) {',
     `${isoSurfaceFunction}\n\nfunction createSurfaceGeometry(THREE, grid, views, onProgress) {\n  return createIsoSurfaceGeometry(THREE, grid, views, onProgress);`
@@ -370,11 +206,11 @@ function patchVisualHullModule(source) {
 }
 function patchMainModule(source) {
   const compatImport = "import './skeleton-helper-compat.js';";
-  const reconstructionImport = "import { installVisualHullWorkflow, applyVisualHullToAvatar } from './visual-hull.js?v=9';";
-  const cutoutImport = "import { autoCutoutDataUrl } from './reference-cutout.js?v=9';";
+  const reconstructionImport = "import { installVisualHullWorkflow, applyVisualHullToAvatar } from './visual-hull.js?v=8';";
+  const cutoutImport = "import { autoCutoutDataUrl } from './reference-cutout.js?v=8';";
   if (!source.includes(compatImport)) source = `${compatImport}\n${source}`;
   if (!source.includes('from \'./visual-hull.js')) source = `${reconstructionImport}\n${source}`;
-  else source = source.replace(/from\s+['"]\.\/visual-hull\.js(?:\?v=\d+)?['"]/, "from './visual-hull.js?v=9'");
+  else source = source.replace(/from\s+['"]\.\/visual-hull\.js(?:\?v=\d+)?['"]/, "from './visual-hull.js?v=8'");
   if (!source.includes('from \'./reference-cutout.js')) source = `${cutoutImport}\n${source}`;
 
   if (source.includes('const state = {') && !source.includes('visualHullGeometry:null')) {
@@ -449,8 +285,8 @@ function patchMainModule(source) {
         $('#modelSourceLabel').textContent='MULTI-VIEW 3D MESH · SKINNED';
         const info=geometry.userData.formaReconstruction||{};
         $('#meshStats').textContent=\`${'${Number(info.vertexCount||0).toLocaleString()}'} VERTICES · ${'${Number(info.triangleCount||0).toLocaleString()}'} TRIANGLES\`;
-        $('#viewportHint').textContent='Side-aware volumetric surface with round limb cross-sections and a forward facial volume';
-        toast('Side-aware volumetric surface reconstructed with round limb volumes and facial depth. Unseen details remain inferred.','success',7000);
+        $('#viewportHint').textContent='Rounded 3D surface reconstructed from direction-labelled reference silhouettes';
+        toast('Rounded multi-view 3D surface reconstructed and bound to the character rig. Review the shape before export.','success',7000);
       }
     });
   } catch (error) {
@@ -482,7 +318,7 @@ async function applyClientPatches(response, url) {
     );
     html = html.replace(
       'two images do not contain enough information to recover hidden geometry or photo textures. This fitting mode creates a clean, editable base mesh; it is not a neural scan or Gaussian-splat conversion.',
-      'Backgrounds are removed automatically when images are added. Label side profiles by the direction the character faces: left or right. Both can be supplied for asymmetrical characters. The mesh uses side-specific constraints, volumetric limb priors and a forward facial volume. An unprovided opposite side is estimated neutrally, not copied from the supplied side. Fine clothing folds and hidden details still require additional views or a local neural reconstruction workflow.'
+      'Backgrounds are removed automatically when images are added. Label side profiles by the direction the character faces: left or right. Both can be supplied for asymmetrical characters. The mesh is generated as a rounded continuous surface from the silhouettes; hidden concave details and clothing depth still need true multi-view geometry or local neural reconstruction.'
     );
     return rewrittenResponse(response, html);
   }
