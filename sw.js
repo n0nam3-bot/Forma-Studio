@@ -1,9 +1,9 @@
-const CACHE_NAME = 'forma-studio-reference-cutout-v7';
+const CACHE_NAME = 'forma-studio-auto-cutout-v8';
 const APP_FILES = [
   './', './index.html', './bootstrap.js', './styles.css',
   './workspace-ui.css', './workspace-ui.js', './src/main.js',
-  './src/skeleton-helper-compat.js', './src/visual-hull.js?v=7',
-  './src/reference-cutout.js?v=7', './src/model.js', './src/motion.js',
+  './src/skeleton-helper-compat.js', './src/visual-hull.js?v=8',
+  './src/reference-cutout.js?v=8', './src/model.js', './src/motion.js',
   './src/persistence.js',
 ];
 const THREE_PREFIXES = [
@@ -37,116 +37,190 @@ function rewrittenResponse(response, body) {
   return new Response(body, { status: response.status, statusText: response.statusText, headers });
 }
 
+const isoSurfaceFunction = String.raw`function createIsoSurfaceGeometry(THREE, grid, views, onProgress) {
+  const { occupancy, indexOf, nx, ny, nz, halfX, halfZ, dx, dy, dz } = grid;
+  const sx = nx + 2, sy = ny + 2, sz = nz + 2;
+  const fieldIndex = (x, y, z) => (z * sy + y) * sx + x;
+  let field = new Float32Array(sx * sy * sz);
+  for (let z = 1; z <= nz; z++) {
+    for (let y = 1; y <= ny; y++) {
+      for (let x = 1; x <= nx; x++) {
+        field[fieldIndex(x, y, z)] = occupancy[indexOf(x - 1, y - 1, z - 1)] ? 1 : 0;
+      }
+    }
+  }
+
+  // Separable [1,2,1] smoothing rounds voxel corners before polygonization.
+  const blurAxis = (input, axis) => {
+    const output = new Float32Array(input.length);
+    for (let z = 0; z < sz; z++) for (let y = 0; y < sy; y++) for (let x = 0; x < sx; x++) {
+      const coordinate = axis === 0 ? x : axis === 1 ? y : z;
+      const limit = axis === 0 ? sx : axis === 1 ? sy : sz;
+      const before = Math.max(0, coordinate - 1), after = Math.min(limit - 1, coordinate + 1);
+      const a = axis === 0 ? fieldIndex(before, y, z) : axis === 1 ? fieldIndex(x, before, z) : fieldIndex(x, y, before);
+      const b = fieldIndex(x, y, z);
+      const c = axis === 0 ? fieldIndex(after, y, z) : axis === 1 ? fieldIndex(x, after, z) : fieldIndex(x, y, after);
+      output[b] = (input[a] + 2 * input[b] + input[c]) * 0.25;
+    }
+    return output;
+  };
+  for (let pass = 0; pass < 3; pass++) {
+    field = blurAxis(field, 0);
+    field = blurAxis(field, 1);
+    field = blurAxis(field, 2);
+  }
+
+  const corners = [[0,0,0],[1,0,0],[1,1,0],[0,1,0],[0,0,1],[1,0,1],[1,1,1],[0,1,1]];
+  const tetrahedra = [[0,5,1,6],[0,1,2,6],[0,2,3,6],[0,3,7,6],[0,7,4,6],[0,4,5,6]];
+  const positions = [], indices = [], vertexMap = new Map();
+  const iso = 0.48;
+  const pointAt = (x, y, z) => [
+    -halfX + (x - 0.5) * dx,
+    (y - 0.5) * dy,
+    -halfZ + (z - 0.5) * dz,
+  ];
+  const addVertex = point => {
+    const key = point.map(value => Math.round(value * 100000)).join(',');
+    let id = vertexMap.get(key);
+    if (id !== undefined) return id;
+    id = positions.length / 3;
+    positions.push(point[0], point[1], point[2]);
+    vertexMap.set(key, id);
+    return id;
+  };
+  const interpolate = (a, b, va, vb) => {
+    const t = clamp((iso - va) / (vb - va || 1e-8), 0, 1);
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+  };
+  const emitTriangle = (a, b, c, insideCenter, outsideCenter) => {
+    const ab = [b[0]-a[0], b[1]-a[1], b[2]-a[2]];
+    const ac = [c[0]-a[0], c[1]-a[1], c[2]-a[2]];
+    const normal = [ab[1]*ac[2]-ab[2]*ac[1], ab[2]*ac[0]-ab[0]*ac[2], ab[0]*ac[1]-ab[1]*ac[0]];
+    const outward = [outsideCenter[0]-insideCenter[0], outsideCenter[1]-insideCenter[1], outsideCenter[2]-insideCenter[2]];
+    if (normal[0]*outward[0] + normal[1]*outward[1] + normal[2]*outward[2] < 0) [b,c] = [c,b];
+    indices.push(addVertex(a), addVertex(b), addVertex(c));
+  };
+
+  for (let z = 0; z < sz - 1; z++) {
+    for (let y = 0; y < sy - 1; y++) for (let x = 0; x < sx - 1; x++) {
+      const values = corners.map(([ox,oy,oz]) => field[fieldIndex(x+ox,y+oy,z+oz)]);
+      if (values.every(value => value < iso) || values.every(value => value >= iso)) continue;
+      const points = corners.map(([ox,oy,oz]) => pointAt(x+ox,y+oy,z+oz));
+      for (const tet of tetrahedra) {
+        const inside = tet.filter(i => values[i] >= iso);
+        const outside = tet.filter(i => values[i] < iso);
+        if (!inside.length || !outside.length) continue;
+        const centerOf = list => list.reduce((sum,i) => [sum[0]+points[i][0]/list.length,sum[1]+points[i][1]/list.length,sum[2]+points[i][2]/list.length],[0,0,0]);
+        const insideCenter = centerOf(inside), outsideCenter = centerOf(outside);
+        const edge = (a,b) => interpolate(points[a],points[b],values[a],values[b]);
+        if (inside.length === 1) {
+          const i=inside[0]; emitTriangle(edge(i,outside[0]),edge(i,outside[1]),edge(i,outside[2]),insideCenter,outsideCenter);
+        } else if (inside.length === 3) {
+          const o=outside[0]; emitTriangle(edge(o,inside[0]),edge(o,inside[1]),edge(o,inside[2]),insideCenter,outsideCenter);
+        } else {
+          const a=inside[0], b=inside[1], c=outside[0], d=outside[1];
+          const ac=edge(a,c), ad=edge(a,d), bc=edge(b,c), bd=edge(b,d);
+          emitTriangle(ac,bc,bd,insideCenter,outsideCenter);
+          emitTriangle(ac,bd,ad,insideCenter,outsideCenter);
+        }
+      }
+    }
+    if (z % 6 === 0) {
+      onProgress?.(0.60 + 0.18 * (z + 1) / (sz - 1), 'Building a rounded continuous character surface…');
+    }
+  }
+  if (!positions.length || !indices.length) throw new Error('No continuous surface was created. Check that the reference silhouettes overlap and are correctly oriented.');
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  const normal = geometry.getAttribute('normal');
+  const position = geometry.getAttribute('position');
+  const colors = new Float32Array(position.count * 3);
+  const uvs = new Float32Array(position.count * 2);
+  const fallback = [0.42, 0.46, 0.52];
+  for (let i = 0; i < position.count; i++) {
+    const x=position.getX(i), y=position.getY(i), z=position.getZ(i);
+    const nxv=normal.getX(i), nzv=normal.getZ(i);
+    let total=0; const colour=[0,0,0];
+    for (const view of views) {
+      const facing=nxv*view.direction.x+nzv*view.direction.z;
+      if (facing<=0.025) continue;
+      const sampled=sampleViewColor(view,x,y,z);
+      if (!sampled) continue;
+      const weight=Math.pow(facing,3.2); total+=weight;
+      colour[0]+=srgbToLinear(sampled[0])*weight;
+      colour[1]+=srgbToLinear(sampled[1])*weight;
+      colour[2]+=srgbToLinear(sampled[2])*weight;
+    }
+    const out=total>0.0001?colour.map(value=>value/total):fallback;
+    colors[i*3]=out[0]; colors[i*3+1]=out[1]; colors[i*3+2]=out[2];
+    uvs[i*2]=(x+halfX)/(2*halfX); uvs[i*2+1]=y/CHARACTER_HEIGHT;
+  }
+  geometry.setAttribute('color',new THREE.Float32BufferAttribute(colors,3));
+  geometry.setAttribute('uv',new THREE.Float32BufferAttribute(uvs,2));
+  geometry.computeBoundingBox(); geometry.computeBoundingSphere();
+  geometry.userData.formaReconstruction={
+    method:'smoothed multi-view silhouette isosurface',
+    views:views.map(view=>({role:view.reference.role,angleDeg:view.angleDeg,confidence:1})),
+    voxelResolution:{x:nx,y:ny,z:nz},filledVoxels:grid.filled,
+    vertexCount:position.count,triangleCount:indices.length/3,
+    surfaceColour:'multi-view projected vertex colour',
+    boundary:'smoothed visual hull; unseen concave surfaces are not inferred',
+  };
+  return geometry;
+}`;
+
+const newInstallWorkflow = "export function installVisualHullWorkflow(THREE, { state, onReconstructed }) {\n  const panel = document.querySelector('.reference-panel');\n  const originalFit = document.querySelector('#fitReferences');\n  if (!panel || !originalFit || originalFit.dataset.visualHullInstalled === 'true') return;\n  originalFit.dataset.visualHullInstalled = 'true';\n  const fitButton = originalFit.cloneNode(true);\n  fitButton.id = 'fitReferences';\n  fitButton.textContent = 'Reconstruct 3D character mesh';\n  originalFit.replaceWith(fitButton);\n\n  if (!document.querySelector('#vhAutoCutoutStyles')) {\n    const style = document.createElement('style');\n    style.id = 'vhAutoCutoutStyles';\n    style.textContent = '.vh-auto-cutout-note{font-size:10px;color:#a8b6c5;margin:8px 0;padding:8px 10px;border:1px solid #354151;border-radius:8px;background:#111a24}.vh-progress{height:5px;border-radius:10px;background:#273241;overflow:hidden;margin:8px 0}.vh-progress>span{display:block;height:100%;width:0;background:#c9f36a;transition:width .15s}.vh-status{font:9px monospace;line-height:1.5;color:#aecb77;min-height:16px;margin:5px 0}';\n    document.head.appendChild(style);\n  }\n  const autoNote = document.createElement('div');\n  autoNote.className = 'vh-auto-cutout-note';\n  autoNote.textContent = 'Background removal: automatic \u00b7 Front + either side direction; add both sides for asymmetry.';\n  fitButton.insertAdjacentElement('beforebegin', autoNote);\n  const progressWrap = document.createElement('div');\n  progressWrap.className = 'vh-progress';\n  progressWrap.innerHTML = '<span id=\"vhProgressBar\"></span>';\n  fitButton.insertAdjacentElement('afterend', progressWrap);\n  const progressText = document.createElement('div');\n  progressText.className = 'vh-status';\n  progressText.id = 'vhProgressText';\n  progressText.textContent = 'Add a Front view and at least one Side (facing left or right) view. Add the opposite side when the character is asymmetrical.';\n  progressWrap.insertAdjacentElement('afterend', progressText);\n\n  fitButton.addEventListener('click', async () => {\n    if (fitButton.disabled) return;\n    fitButton.disabled = true;\n    fitButton.textContent = 'Reconstructing rounded 3D surface\u2026';\n    const bar = document.querySelector('#vhProgressBar');\n    const setProgress = (value, message) => {\n      if (bar) bar.style.width = `${Math.round(value * 100)}%`;\n      progressText.textContent = `${Math.round(value * 100)}% \u00b7 ${message}`;\n    };\n    try {\n      const geometry = await buildVisualHull(THREE, state.references, setProgress);\n      onReconstructed(geometry);\n      const info = geometry.userData.formaReconstruction;\n      setProgress(1, `Complete \u00b7 ${info.views.length} views \u00b7 ${info.vertexCount.toLocaleString()} vertices \u00b7 ${info.triangleCount.toLocaleString()} triangles.`);\n      toast('Rounded 3D surface reconstructed and bound to the character rig. Review the silhouette in the viewport.', 'success', 6500);\n    } catch (error) {\n      progressText.textContent = `Reconstruction stopped \u00b7 ${error.message}`;\n      toast(error.message || 'Could not reconstruct this character.', 'error', 6500);\n    } finally {\n      fitButton.disabled = false;\n      fitButton.textContent = 'Reconstruct 3D character mesh';\n    }\n  });\n}";
+
 function patchVisualHullModule(source) {
   source = source.replace(
-    /const\s*\{\s*editor\s*\}\s*=\s*makeEditorUI\(panel\);/,
-    'const { row, editor } = makeEditorUI(panel);'
-  );
-  source = source.replace(
     'const DEFAULT_ANGLES = { front: 0, side: 90, back: 180, threeQuarter: 45 };',
-    'const DEFAULT_ANGLES = { front: 0, side: 90, sideOpposite: 270, back: 180, threeQuarter: 45 };'
+    'const DEFAULT_ANGLES = { front: 0, side: 90, sideFacingLeft: 90, sideFacingRight: 270, sideOpposite: 270, back: 180, threeQuarter: 45 };'
   );
   source = source.replaceAll('decodeImage(reference.dataUrl)', 'decodeImage(reference.originalDataUrl || reference.dataUrl)');
-  source = source.replace('Review / crop / mask views', 'Refine cutout / view direction');
-  source = source.replace('Camera angle<select id="vhAngleSelect">', 'Camera angle · side direction<select id="vhAngleSelect">');
-  source = source.replace(
-    "  const angleSelect = editor.querySelector('#vhAngleSelect');",
-    `  const angleSelect = editor.querySelector('#vhAngleSelect');\n  [...angleSelect.options].forEach(option => {\n    const labels = { 0: '0° · Front', 90: '90° · Side (front points image-left)', 180: '180° · Back', 270: '270° · Other side (front points image-right)' };\n    option.textContent = labels[Number(option.value)] || \`${'${option.value}'}°\`;\n  });`
-  );
-  source = source.replace(
-    'Each view must show the same pose from a different angle.',
-    'Backgrounds are removed automatically on upload. For side views, 90° means the character’s front points toward image-left; 270° means image-right. Add Other side for an asymmetrical opposite profile.'
-  );
-  source = source.replace(
-    "editorState.reference.dataUrl = cropped.toDataURL('image/png');\n    editorState.reference.maskDataUrl = null;",
-    "editorState.reference.dataUrl = cropped.toDataURL('image/png');\n    editorState.reference.originalDataUrl = editorState.reference.dataUrl;\n    editorState.reference.maskDataUrl = null;"
-  );
-
-  // Choose the widest front and side silhouettes when opposite-side images are
-  // supplied. Both are still intersected as independent camera constraints.
   source = source.replace(
     /function estimateExtents\(views\) \{[\s\S]*?\n\}/,
     `function estimateExtents(views) {
-  const frontCandidates = views.filter(view => ['front', 'back'].includes(view.reference.role));
-  const sideCandidates = views.filter(view => ['side', 'sideOpposite'].includes(view.reference.role));
-  const front = views.find(view => view.reference.role === 'front')
-    || views.find(view => view.reference.role === 'back')
-    || views.reduce((best, view) => Math.abs(Math.cos(radians(view.angleDeg))) > Math.abs(Math.cos(radians(best.angleDeg))) ? view : best, views[0]);
-  const side = (sideCandidates.length ? sideCandidates : views)
-    .reduce((best, view) => view.aspect > best.aspect ? view : best, (sideCandidates.length ? sideCandidates : views)[0]);
+  const front = views.find(view => view.reference.role === 'front') || views.find(view => view.reference.role === 'back') || views[0];
+  const sides = views.filter(view => ['sideFacingLeft','sideFacingRight','side','sideOpposite'].includes(view.reference.role));
+  const sidePool = sides.length ? sides : views;
+  const side = sidePool.reduce((best, view) => view.aspect > best.aspect ? view : best, sidePool[0]);
   const halfX = clamp(front.aspect * CHARACTER_HEIGHT * 0.5 * 1.045, 0.13, 0.82);
   const halfZ = clamp(side.aspect * CHARACTER_HEIGHT * 0.5 * 1.045, 0.10, 0.70);
   return { halfX, halfZ };
 }`
   );
-
-  const smoothFunction = `function smoothVoxelSurface(geometry, pairs = 3) {
-  const position = geometry.getAttribute('position');
-  const index = geometry.getIndex();
-  if (!position || !index || position.count > 450000) return;
-  const links = Array.from({ length: position.count }, () => new Set());
-  for (let i = 0; i < index.count; i += 3) {
-    const a = index.getX(i), b = index.getX(i + 1), c = index.getX(i + 2);
-    links[a].add(b); links[a].add(c);
-    links[b].add(a); links[b].add(c);
-    links[c].add(a); links[c].add(b);
-  }
-  let current = position.array.slice();
-  const pass = amount => {
-    const next = current.slice();
-    for (let i = 0; i < links.length; i++) {
-      const neighbours = links[i];
-      if (!neighbours.size) continue;
-      let x = 0, y = 0, z = 0;
-      for (const neighbour of neighbours) {
-        const offset = neighbour * 3;
-        x += current[offset]; y += current[offset + 1]; z += current[offset + 2];
-      }
-      const count = neighbours.size;
-      const offset = i * 3;
-      next[offset] += (x / count - current[offset]) * amount;
-      next[offset + 1] += (y / count - current[offset + 1]) * amount;
-      next[offset + 2] += (z / count - current[offset + 2]) * amount;
-    }
-    current = next;
-  };
-  // Taubin-style positive/negative passes soften voxel stair-steps while
-  // limiting the shrinkage caused by ordinary Laplacian smoothing.
-  for (let i = 0; i < pairs; i++) { pass(0.34); pass(-0.36); }
-  position.array.set(current);
-  position.needsUpdate = true;
-}`;
-  if (!source.includes('function smoothVoxelSurface')) {
-    source = source.replace(
-      'function createSurfaceGeometry(THREE, grid, views, onProgress) {',
-      `${smoothFunction}\n\nfunction createSurfaceGeometry(THREE, grid, views, onProgress) {`
-    );
-  }
   source = source.replace(
-    '  geometry.setIndex(indices);\n  geometry.computeVertexNormals();',
-    '  geometry.setIndex(indices);\n  smoothVoxelSurface(geometry, 4);\n  geometry.computeVertexNormals();'
+    "  const requiredSide = references.some(reference => reference.role === 'side');",
+    "  const requiredSide = references.some(reference => ['sideFacingLeft','sideFacingRight','side','sideOpposite'].includes(reference.role));"
   );
+  source = source.replace("Upload separate Front and Side views first. A single picture cannot define a 3D volume.", "Upload a Front view and at least one Side view labelled facing left or facing right. Add both side views to capture asymmetry.");
+  source = source.replace(
+    'function createSurfaceGeometry(THREE, grid, views, onProgress) {',
+    `${isoSurfaceFunction}\n\nfunction createSurfaceGeometry(THREE, grid, views, onProgress) {\n  return createIsoSurfaceGeometry(THREE, grid, views, onProgress);`
+  );
+  source = source.replace(/export function installVisualHullWorkflow\(THREE,[\s\S]*$/, newInstallWorkflow);
   return source;
 }
-
 function patchMainModule(source) {
   const compatImport = "import './skeleton-helper-compat.js';";
-  const reconstructionImport = "import { installVisualHullWorkflow, applyVisualHullToAvatar } from './visual-hull.js?v=7';";
-  const cutoutImport = "import { autoCutoutDataUrl } from './reference-cutout.js?v=7';";
+  const reconstructionImport = "import { installVisualHullWorkflow, applyVisualHullToAvatar } from './visual-hull.js?v=8';";
+  const cutoutImport = "import { autoCutoutDataUrl } from './reference-cutout.js?v=8';";
   if (!source.includes(compatImport)) source = `${compatImport}\n${source}`;
   if (!source.includes('from \'./visual-hull.js')) source = `${reconstructionImport}\n${source}`;
-  else source = source.replace(/from\s+['"]\.\/visual-hull\.js(?:\?v=\d+)?['"]/, "from './visual-hull.js?v=7'");
+  else source = source.replace(/from\s+['"]\.\/visual-hull\.js(?:\?v=\d+)?['"]/, "from './visual-hull.js?v=8'");
   if (!source.includes('from \'./reference-cutout.js')) source = `${cutoutImport}\n${source}`;
 
   if (source.includes('const state = {') && !source.includes('visualHullGeometry:null')) {
     source = source.replace('  shape:{...DEFAULT_SHAPE},', '  shape:{...DEFAULT_SHAPE},\n  visualHullGeometry:null,');
   }
 
-  // The second side profile has its own camera direction, allowing asymmetric
-  // silhouettes to constrain the back/front depth independently.
+  // Side reference slots encode whether the character faces image-left or image-right.
   source = source.replace(
     "    {role:'side',label:'Side',required:true},",
-    "    {role:'side',label:'Side',required:true},\n    {role:'sideOpposite',label:'Other side',required:false},"
+    "    {role:'sideFacingLeft',label:'Side (facing left)',required:false},\n    {role:'sideFacingRight',label:'Side (facing right)',required:false},"
   );
 
   // New uploads are cut out locally before being placed in the reference grid.
@@ -173,9 +247,22 @@ function patchMainModule(source) {
   }
 
   // Preserve the new slot when restoring older .forma projects.
-  const restoreMarker = "  state.referenceSlots=Array.isArray(project.referenceSlots)?project.referenceSlots:[\n    {role:'front',label:'Front',required:true},{role:'side',label:'Side',required:true},{role:'back',label:'Back',required:false},{role:'threeQuarter',label:'3/4 view',required:false},\n  ];";
-  if (source.includes(restoreMarker) && !source.includes("if(!state.referenceSlots.some(slot=>slot.role==='sideOpposite'))")) {
-    source = source.replace(restoreMarker, `${restoreMarker}\n  if(!state.referenceSlots.some(slot=>slot.role==='sideOpposite'))state.referenceSlots.splice(2,0,{role:'sideOpposite',label:'Other side',required:false});`);
+  source = source.replace(
+    /  state\.referenceSlots=Array\.isArray\(project\.referenceSlots\)\?project\.referenceSlots:\[[\s\S]*?\n  \];/,
+    `state.referenceSlots=[
+      {role:'front',label:'Front',required:true},
+      {role:'sideFacingLeft',label:'Side (facing left)',required:false},
+      {role:'sideFacingRight',label:'Side (facing right)',required:false},
+      ...state.referenceSlots.filter(slot=>!['side','sideOpposite','sideFacingLeft','sideFacingRight','front'].includes(slot.role))
+    ];`
+  );
+  const referenceRoleMigration = '  state.references=Array.isArray(project.references)?project.references:[];';
+  if (source.includes(referenceRoleMigration) && !source.includes("reference.role==='sideOpposite'")) {
+    source = source.replace(referenceRoleMigration, `${referenceRoleMigration}
+  state.references.forEach(reference=>{
+    if(reference.role==='sideOpposite'||reference.role==='sideFacingRight'||(reference.role==='side'&&Number(reference.angleDeg)===270)){reference.role='sideFacingRight';reference.label='Side (facing right)';reference.angleDeg=270;}
+    else if(reference.role==='side'||reference.role==='sideFacingLeft'){reference.role='sideFacingLeft';reference.label='Side (facing left)';if(!Number.isFinite(Number(reference.angleDeg)))reference.angleDeg=90;}
+  });`);
   }
 
   const avatarMarker = "  exportAvatar=createHumanoid(state.shape,{name:'ExportCharacter',geometryOverride:sharedGeometry});";
@@ -198,8 +285,8 @@ function patchMainModule(source) {
         $('#modelSourceLabel').textContent='MULTI-VIEW 3D MESH · SKINNED';
         const info=geometry.userData.formaReconstruction||{};
         $('#meshStats').textContent=\`${'${Number(info.vertexCount||0).toLocaleString()}'} VERTICES · ${'${Number(info.triangleCount||0).toLocaleString()}'} TRIANGLES\`;
-        $('#viewportHint').textContent='Volumetric mesh reconstructed from intersecting reference silhouettes';
-        toast('Multi-view 3D volume reconstructed and bound to the character rig. Review the surface before export.','success',7000);
+        $('#viewportHint').textContent='Rounded 3D surface reconstructed from direction-labelled reference silhouettes';
+        toast('Rounded multi-view 3D surface reconstructed and bound to the character rig. Review the shape before export.','success',7000);
       }
     });
   } catch (error) {
@@ -231,7 +318,7 @@ async function applyClientPatches(response, url) {
     );
     html = html.replace(
       'two images do not contain enough information to recover hidden geometry or photo textures. This fitting mode creates a clean, editable base mesh; it is not a neural scan or Gaussian-splat conversion.',
-      'Each view constrains the actual 3D volume. Backgrounds are cut out locally. Opposite-side views constrain asymmetry; the surface is smoothed but hidden concave detail still requires more views or a local neural reconstruction workflow.'
+      'Backgrounds are removed automatically when images are added. Label side profiles by the direction the character faces: left or right. Both can be supplied for asymmetrical characters. The mesh is generated as a rounded continuous surface from the silhouettes; hidden concave details and clothing depth still need true multi-view geometry or local neural reconstruction.'
     );
     return rewrittenResponse(response, html);
   }

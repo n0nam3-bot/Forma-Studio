@@ -199,6 +199,7 @@ export async function autoCutoutDataUrl(originalDataUrl) {
     sourceContext.drawImage(image, 0, 0, sourceWidth, sourceHeight);
     const sourceHasAlpha = result.mode === 'source alpha';
     const compactOriginal = sourceCanvas.toDataURL(sourceHasAlpha ? 'image/webp' : 'image/jpeg', 0.92);
+    const lowResMask = makeMaskCanvas(result.mask, width, height);
 
     const fullMask = document.createElement('canvas');
     fullMask.width = sourceWidth;
