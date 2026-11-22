@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import stat
@@ -176,8 +177,18 @@ def main() -> int:
     for archive in archives:
         archive.unlink()
 
-    print(f"Applied {len(archives)} ZIP archive(s): {written} file(s) written, {deleted} file(s) deleted.")
+    message = f"Applied {len(archives)} ZIP archive(s): {written} file(s) written, {deleted} file(s) deleted."
+    print(message)
     print("Processed ZIP files were removed from upload/.")
+    summary_value = os.environ.get("GITHUB_STEP_SUMMARY")
+    summary_path = Path(summary_value) if summary_value else None
+    if summary_path and summary_path.is_file():
+        with summary_path.open("a", encoding="utf-8") as summary:
+            summary.write("## ZIP extraction\n\n")
+            summary.write(f"- Archives processed: {len(archives)}\n")
+            summary.write(f"- Files written or replaced: {written}\n")
+            summary.write(f"- Files deleted: {deleted}\n")
+            summary.write("- Uploaded ZIP files removed from `upload/`.\n")
     return 0
 
 
