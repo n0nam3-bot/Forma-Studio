@@ -3,7 +3,7 @@ name: Apply uploaded ZIP updates
 on:
   push:
     paths:
-      - 'upload/*.zip'
+      - "upload/*.zip"
   workflow_dispatch:
 
 permissions:
@@ -16,6 +16,7 @@ concurrency:
 jobs:
   apply-updates:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Check out the branch that received the ZIP
         uses: actions/checkout@v4
@@ -25,20 +26,22 @@ jobs:
           persist-credentials: true
 
       - name: Validate and extract uploaded ZIP files
-        run: python3 scripts/process_uploads.py 
---upload-dir upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/process_uploads.py --upload-dir upload
 
       - name: Check extracted changes
         id: changes
         shell: bash
         run: |
+          set -euo pipefail
           git diff --check
-          if [ -z "$(git status --porcelain)" ]; then
+          if [[ -z "$(git status --porcelain)" ]]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "No ZIP updates were found, or the archive contained no net changes."
           else
-            echo "changed=true" >> 
-"$GITHUB_OUTPUT"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
             git status --short
           fi
 
@@ -46,22 +49,27 @@ jobs:
         if: steps.changes.outputs.changed == 'true'
         env:
           TARGET_BRANCH: ${{ github.ref_name }}
+        shell: bash
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
-          git config user.email 
-"41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Apply uploaded ZIP update"
-          git push origin "HEAD:${TARGET_BRANCH}"
+          if ! git diff --cached --quiet; then
+            git commit -m "Apply uploaded ZIP update"
+            git push origin "HEAD:${TARGET_BRANCH}"
+          else
+            echo "No staged changes to commit."
+          fi
 
       - name: Report result
         if: always()
+        shell: bash
         run: |
           {
             echo "## Forma Studio ZIP updater"
             echo ""
-            echo "- Branch: 
-\`${GITHUB_REF_NAME}\`"
+            echo "- Branch: \`${GITHUB_REF_NAME}\`"
             echo "- Result: ${{ job.status }}"
             echo "- ZIP source: \`upload/*.zip\`"
             echo "- Processed archives are deleted from \`upload/\` after successful extraction."
