@@ -46,12 +46,69 @@ def safe_relative_path(raw_name: str) -> str:
     parts = PurePosixPath(name).parts
     if not parts or any(part in ("", ".", "..") for part in parts):
         raise ValueError(f"Unsafe ZIP path: {raw_name!r}")
-    if parts[0] == ".git" or ".git" in parts:
+    if ".git" in parts:
         raise ValueError("ZIP updates may not write inside .git/")
     return "/".join(parts)
 
 
-def archive_plan(archive: Path) -> ArchivePlan:
+def _folder_key(value: str) -> str:
+    """Compare archive and wrapper names without spaces or punctuation."""
+    return re.sub(r"[^a-z0-9]", "", value.casefold())
+
+
+def strip_archive_wrapper(
+    archive: Path,
+    normalized: list[tuple[zipfile.ZipInfo, str]],
+    repo_root: Path,
+) -> list[tuple[zipfile.ZipInfo, str]]:
+    """Remove a packaging folder, never a real repository-relative folder.
+
+    ZIPs made by selecting a folder often contain paths such as
+    ``my-update/.github/workflows/file.yml``. When that outer folder matches
+    the ZIP filename, strip exactly that one component. A path such as
+    ``src/main.js`` remains ``src/main.js`` (including when ``src`` is the
+    only directory in the archive).
+
+    The original ``forma-studio/`` full-package wrapper is also supported.
+    """
+    if not normalized:
+        return normalized
+
+    first_parts = {PurePosixPath(path).parts[0] for _, path in normalized}
+    if len(first_parts) != 1:
+        return normalized
+
+    wrapper = next(iter(first_parts))
+    wrapper_key = _folder_key(wrapper)
+    archive_key = _folder_key(archive.stem)
+
+    # Legacy full-site ZIP wrapper.
+    should_strip = wrapper_key == "formastudio"
+
+    # Generic folder-compressed ZIPs: strip only when the outer folder name
+    # matches the archive name and it is not already a real root path.
+    if wrapper_key == archive_key:
+        existing_root_path = repo_root / wrapper
+        if not existing_root_path.exists():
+            should_strip = True
+
+    if not should_strip:
+        return normalized
+
+    prefix = wrapper + "/"
+    stripped: list[tuple[zipfile.ZipInfo, str]] = []
+    for item, path in normalized:
+        if path == wrapper:
+            # An explicit ZIP directory record for the wrapper itself.
+            continue
+        if not path.startswith(prefix):
+            # Do not partially strip malformed/mixed-root archives.
+            return normalized
+        stripped.append((item, path[len(prefix):]))
+    return stripped
+
+
+def archive_plan(archive: Path, repo_root: Path) -> ArchivePlan:
     try:
         zf = zipfile.ZipFile(archive)
     except (OSError, zipfile.BadZipFile) as exc:
@@ -82,10 +139,7 @@ def archive_plan(archive: Path) -> ArchivePlan:
                 raise ValueError(f"{archive.name}: suspicious compression ratio ({path})")
             normalized.append((item, path))
 
-        # Full initial packages use a single forma-studio/ wrapper. Strip it;
-        # incremental update ZIPs use repository-relative paths and are untouched.
-        if all(path.startswith("forma-studio/") for _, path in normalized):
-            normalized = [(item, path[len("forma-studio/"):]) for item, path in normalized]
+        normalized = strip_archive_wrapper(archive, normalized, repo_root)
 
         files: list[PlannedFile] = []
         deletions: list[str] = []
@@ -168,7 +222,7 @@ def main() -> int:
 
     try:
         # Validate every archive before changing any repository files.
-        plans = [archive_plan(path) for path in archives]
+        plans = [archive_plan(path, repo_root) for path in archives]
         written, deleted = apply_plans(repo_root, plans)
     except (ValueError, OSError, zipfile.BadZipFile) as exc:
         print(f"Update rejected: {exc}", file=sys.stderr)
