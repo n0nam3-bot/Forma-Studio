@@ -336,6 +336,12 @@ function updateBoneControls() {
   }
 }
 
+function isSupportedReferenceImage(file) {
+  const name=String(file?.name||'').toLowerCase();
+  const type=String(file?.type||'').toLowerCase();
+  return /\.(png|jpe?g|webp|avif)$/i.test(name) || ['image/png','image/jpeg','image/webp','image/avif'].includes(type);
+}
+
 function initReferences() {
   renderReferenceGrid();
   $('#addReference').addEventListener('click',()=>{
@@ -356,11 +362,11 @@ function renderReferenceGrid() {
     label.className=`reference-slot ${slot.required?'primary-slot':''} ${ref?'has-image':''}`;
     label.dataset.role=slot.role;
     const input=document.createElement('input');
-    input.type='file'; input.accept='image/png,image/jpeg,image/webp'; input.hidden=true;
+    input.type='file'; input.accept='image/*'; input.className='reference-file-input'; input.removeAttribute('hidden');
     input.addEventListener('change',async()=>{
       const file=input.files?.[0]; if(!file)return;
       if(file.size>20*1024*1024){toast('Choose an image smaller than 20 MB.','error');input.value='';return;}
-      if(!file.type.startsWith('image/')){toast('Please choose a PNG, JPG or WebP image.','error');return;}
+      if(!isSupportedReferenceImage(file)){toast('Choose a supported image (PNG, JPG, WebP or AVIF).','error');input.value='';return;}
       try {
         const dataUrl=await readFileAsDataURL(file);
         state.references=state.references.filter(item=>item.role!==slot.role);
@@ -386,7 +392,7 @@ function renderReferenceGrid() {
     label.addEventListener('drop',async event=>{
       event.preventDefault();label.style.borderColor='';
       const file=event.dataTransfer.files?.[0];
-      if(!file?.type.startsWith('image/'))return;
+      if(!file || !isSupportedReferenceImage(file))return;
       if(file.size>20*1024*1024){toast('Choose an image smaller than 20 MB.','error');return;}
       try{const dataUrl=await readFileAsDataURL(file);state.references=state.references.filter(item=>item.role!==slot.role);state.references.push({role:slot.role,label:slot.label,name:file.name,dataUrl});renderReferenceGrid();toast(`${slot.label} reference added locally.`);}catch(error){toast(error.message,'error');}
     });
@@ -887,4 +893,5 @@ async function init() {
 init().catch(error=>{
   console.error('Forma Studio startup failed',error);
   toast(`Startup problem: ${error.message}`,'error',8000);
+  window.dispatchEvent(new CustomEvent('forma:startup-error',{detail:{message:error?.message||String(error)}}));
 });
