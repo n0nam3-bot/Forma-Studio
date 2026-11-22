@@ -1,6 +1,11 @@
-const CACHE_NAME = 'forma-studio-shell-v1';
-const APP_FILES = ['./','./index.html','./styles.css','./src/main.js','./src/model.js','./src/motion.js','./src/persistence.js'];
-const THREE_PREFIX = 'https://cdn.jsdelivr.net/npm/three@0.180.0/';
+const CACHE_NAME = 'forma-studio-shell-v2';
+const APP_FILES = ['./','./index.html','./bootstrap.js','./styles.css','./src/main.js','./src/model.js','./src/motion.js','./src/persistence.js'];
+const THREE_PREFIXES = [
+  'https://cdn.jsdelivr.net/npm/three@0.180.0/',
+  'https://unpkg.com/three@0.180.0/',
+  'https://fastly.jsdelivr.net/npm/three@0.180.0/',
+  'https://gcore.jsdelivr.net/npm/three@0.180.0/',
+];
 
 self.addEventListener('install',event=>{
   event.waitUntil(caches.open(CACHE_NAME).then(cache=>cache.addAll(APP_FILES)).then(()=>self.skipWaiting()));
@@ -13,7 +18,7 @@ self.addEventListener('fetch',event=>{
   if(request.method!=='GET')return;
   const url=new URL(request.url);
   const sameOrigin=url.origin===self.location.origin;
-  const threeCdn=url.href.startsWith(THREE_PREFIX);
+  const threeCdn=THREE_PREFIXES.some(prefix=>url.href.startsWith(prefix));
   if(!sameOrigin&&!threeCdn)return;
   event.respondWith((async()=>{
     const cache=await caches.open(CACHE_NAME);

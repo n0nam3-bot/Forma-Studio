@@ -8,14 +8,6 @@
   <title>Forma Studio — Character Lab</title>
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
   <link rel="stylesheet" href="./styles.css" />
-  <script type="importmap">
-    {
-      "imports": {
-        "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
-        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
-      }
-    }
-  </script>
 </head>
 <body>
   <div class="app-shell">
@@ -52,7 +44,7 @@
           <span class="privacy-check">● LOCAL PROCESSING</span>
         </div>
         <button class="nav-item help-nav" data-page="help" type="button"><span class="nav-icon">?</span><span>Workflow guide</span></button>
-        <div class="sidebar-foot">FORMA STUDIO <span>·</span> 0.9.0</div>
+        <div class="sidebar-foot">FORMA STUDIO <span>·</span> 0.9.1</div>
       </aside>
 
       <main class="main-content" id="mainContent">
@@ -281,6 +273,6 @@
 
   <div class="toast-region" id="toastRegion" aria-live="polite"></div>
   <dialog id="confirmDialog" class="app-dialog"><form method="dialog"><div class="dialog-kicker">FORMA STUDIO</div><h2 id="dialogTitle">Save project?</h2><p id="dialogText">Your project will be stored in this browser.</p><div class="dialog-actions"><button class="button button-quiet" value="cancel">Cancel</button><button class="button button-primary" id="dialogConfirm" value="confirm">Continue</button></div></form></dialog>
-  <script type="module" src="./src/main.js"></script>
+  <script src="./bootstrap.js" defer></script>
 </body>
 </html>

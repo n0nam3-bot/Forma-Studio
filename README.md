@@ -7,7 +7,7 @@ A local-first, static browser application for reference-guided humanoid fitting,
 This is a static site: no package manager, build step, API key, backend, account, or server-side inference is required.
 
 - Open `index.html` from a local static web server, or deploy the folder to GitHub Pages.
-- The first launch needs an internet connection to load Three.js and its official addon modules from jsDelivr. A service worker caches the app and those modules for later offline use where the browser permits it.
+- The first launch needs an internet connection to load Three.js and its official addon modules. The bootloader tries several free CDN hosts automatically and caches the selected modules for later offline use where the browser permits it. If all hosts are blocked, image previews, reference management, navigation and project backups still work; 3D editing and GLB export show a clear unavailable message rather than leaving the page inert.
 - WebGL must be available. Desktop Chrome/Firefox and recent Android browsers are the main targets.
 
 ### GitHub Pages
@@ -64,6 +64,12 @@ No paid API, model endpoint, subscription, usage token or cloud GPU is called. G
 
 The repository includes syntax-checkable source modules and a static deployment setup. The browser implementation provides a functional local character-fitting, rigging, motion and GLB workflow, but it is not a substitute for a full DCC pipeline or a formally certified production-character generator. Test exported GLBs in the exact engine/version and target platform used by your game, with special attention to shoulders, hips, elbows, knees, foot contacts, UVs, materials, and animation retargeting.
 
+## Startup and image-upload troubleshooting
+
+The plain JavaScript bootloader (`bootstrap.js`) loads the 3D engine only after checking free CDN availability. If a CDN is blocked by a network filter, browser content blocker or DNS issue, it falls back to a limited mode where image selection and previews, navigation, proportion values and project-file backups remain available. The 3D viewport and GLB export require the Three.js modules to load. Try reloading on a different network or disabling a content blocker for the Pages site. The reference picker accepts PNG, JPG, WebP and AVIF; images must be under 20 MB.
+
+The reference images are local browser files; they are not uploaded to GitHub or a server. Save a project locally or download a `.forma` file to retain the images between browsers/devices.
+
 ## Incremental ZIP update workflow
 
 After the initial installation, the repository includes a GitHub Actions workflow that applies update ZIPs uploaded to `upload/`.
@@ -76,9 +82,9 @@ In **Settings → Actions → General → Workflow permissions**, allow the work
 
 ### Future updates
 
-1. Create an incremental `.zip` containing only the files being added or replaced. Store each file at its repository-relative path inside the archive, such as `src/main.js`, `styles.css`, or `.github/workflows/example.yml`. Do not include a parent project folder.
+1. Create an incremental `.zip` containing only the files being added or replaced. Store each file at its repository-relative path inside the archive, such as `src/main.js` or `styles.css`. Do not include a parent project folder.
 2. To delete existing files, add a UTF-8 `.update-delete.txt` at the ZIP root. List one repository-relative file path per line; blank lines and lines beginning with `#` are ignored. The manifest is not extracted as a repository file.
-3. Upload the ZIP to the repository's `upload/` folder and commit the upload. The workflow validates and extracts the archive into the repository root, commits the result, and removes the uploaded ZIP.
-4. Open **Actions → Apply uploaded ZIP updates** to confirm the run succeeded.
+3. Upload the ZIP directly into `upload/` on the same branch configured for GitHub Pages, then commit it. The workflow validates and extracts the archive into the repository root, commits the result, and removes the uploaded ZIP.
+4. Open **Actions → Apply uploaded ZIP updates** and confirm the run succeeded. If it did not trigger, run it manually with `workflow_dispatch` after committing the ZIP.
 
 The updater also accepts a complete initial package that has a single `forma-studio/` top-level folder and strips that wrapper automatically. It rejects path traversal, absolute paths, symbolic links, oversized archives and suspicious compression ratios. When several ZIPs are uploaded together, they are applied in filename order; later archives can replace files written by earlier ones.
