@@ -1,4 +1,4 @@
-const CACHE_NAME = 'forma-studio-reference-guide-v4';
+const CACHE_NAME = 'forma-studio-two-view-reconstruction-v5';
 const APP_FILES = [
   './',
   './index.html',
@@ -8,7 +8,7 @@ const APP_FILES = [
   './workspace-ui.js',
   './src/main.js',
   './src/skeleton-helper-compat.js',
-  './src/reference-overlay.js',
+  './src/multiview-reconstruction.js',
   './src/model.js',
   './src/motion.js',
   './src/persistence.js',
@@ -47,81 +47,97 @@ function rewrittenResponse(response, body) {
 function patchMainModule(source) {
   const imports = [
     "import './skeleton-helper-compat.js';",
-    "import { ReferenceOverlayManager } from './reference-overlay.js';",
+    "import { prepareTwoViewFit, applyTwoViewFit } from './multiview-reconstruction.js';",
   ];
   for (const line of imports) {
     if (!source.includes(line)) source = `${line}\n${source}`;
   }
 
-  const viewsMarker = 'const views = {};';
-  if (!source.includes('function syncReferenceOverlay(') && source.includes(viewsMarker)) {
-    const helpers = `
-const referenceOverlaySettings = { enabled: true, opacity: 38, scale: 100 };
-function syncReferenceOverlay(view = views.build) {
-  if (!view?.referenceOverlay) return;
-  const role = view.cameraType === 'front' ? 'front' : view.cameraType === 'side' ? 'side' : '';
-  const reference = role ? state.references.find(item => item.role === role) : null;
-  view.referenceOverlay.setReference(role || null, reference?.dataUrl || null);
-  const hasReference = Boolean(reference);
-  view.referenceOverlay.setVisible(referenceOverlaySettings.enabled && hasReference);
-  view.referenceOverlay.setOpacity(referenceOverlaySettings.opacity);
-  view.referenceOverlay.setScale(referenceOverlaySettings.scale);
-  const toggle = document.querySelector('#referenceOverlayToggle');
-  if (toggle) {
-    toggle.classList.toggle('active', referenceOverlaySettings.enabled && hasReference);
-    toggle.setAttribute('aria-pressed', String(referenceOverlaySettings.enabled));
-    toggle.title = hasReference
-      ? 'Toggle the semi-transparent photo guide. It is not baked into the exported mesh.'
-      : 'Choose Front or Side and upload that reference view to show an alignment guide.';
+  // Keep the image-derived fit with the project state so proportions can be
+  // rebuilt without losing the source-view geometry/appearance information.
+  source = source.replace(
+    '  shape:{...DEFAULT_SHAPE},',
+    '  shape:{...DEFAULT_SHAPE}, imageFit:null,'
+  );
+
+  // Fit the actual generated skinned surface before its geometry is cloned for
+  // the rig, animation and export workspaces. No photo plane is ever created.
+  const avatarMarker = "  exportAvatar=createHumanoid(state.shape,{name:'ExportCharacter',geometryOverride:sharedGeometry});";
+  if (source.includes(avatarMarker) && !source.includes('applyTwoViewFit(THREE,avatar,state.imageFit)')) {
+    source = source.replace(avatarMarker, `${avatarMarker}\n  if(state.imageFit){[buildAvatar,rigAvatar,sourceAvatar,resultAvatar,exportAvatar].forEach(avatar=>applyTwoViewFit(THREE,avatar,state.imageFit));}`);
+  }
+
+  const shapeLabelBlock = `  $('#meshStats').textContent='22 BONES · 1 SKINNED MESH';
+  $('#modelSourceLabel').textContent='PARAMETRIC HUMANOID · SKINNED';
+  $('#viewportHint').textContent='Proportions applied · refine joint placement in Rig & pose';`;
+  if (source.includes(shapeLabelBlock)) {
+    source = source.replace(shapeLabelBlock, `  $('#meshStats').textContent=state.imageFit?'IMAGE-DERIVED SILHOUETTE · PROJECTED SURFACE COLOUR':'22 BONES · 1 SKINNED MESH';
+  $('#modelSourceLabel').textContent=state.imageFit?'TWO-VIEW FIT · IMAGE-COLOURED SKINNED MESH':'PARAMETRIC HUMANOID · SKINNED';
+  $('#viewportHint').textContent=state.imageFit?'Actual mesh geometry and vertex colours fitted from front + side references':'Proportions applied · refine joint placement in Rig & pose';`);
+  }
+
+  const fitFunctionMarker = 'async function measureReferenceSilhouette(reference) {';
+  if (!source.includes('async function rebuildTwoViewFit()') && source.includes(fitFunctionMarker)) {
+    const fitFunction = `
+let twoViewFitRevision=0;
+async function rebuildTwoViewFit(){
+  const front=state.references.find(item=>item.role==='front');
+  const side=state.references.find(item=>item.role==='side');
+  const revision=++twoViewFitRevision;
+  if(!front||!side){
+    state.imageFit=null;
+    if(state.meshMode!=='imported'){
+      createAllAvatars();
+      updateSourceChoice();
+    }
+    return;
+  }
+  try{
+    const fit=await prepareTwoViewFit(state.references);
+    if(revision!==twoViewFitRevision)return;
+    state.imageFit=fit;
+    if(state.meshMode==='fitted'){
+      createAllAvatars();
+      $('#modelSourceLabel').textContent='TWO-VIEW FIT · IMAGE-COLOURED SKINNED MESH';
+      $('#meshStats').textContent='IMAGE-DERIVED SILHOUETTE · PROJECTED SURFACE COLOUR';
+      $('#viewportHint').textContent='Actual mesh geometry and vertex colours fitted from front + side references';
+    }else{
+      toast('Reference fit is ready for the generated humanoid. The imported mesh is unchanged.','info',5000);
+    }
+    const confidence=Math.round((fit.front.confidence+fit.side.confidence)*50);
+    toast('Front and side views fitted into the actual 3D mesh ('+confidence+'% capture confidence). Inspect the silhouette and refine proportions.','success',6500);
+  }catch(error){
+    if(revision!==twoViewFitRevision)return;
+    state.imageFit=null;
+    toast('Two-view fit failed: '+(error.message||'Could not analyse these images.'),'error',7000);
   }
 }
-function installReferenceOverlayControls() {
-  const actions = document.querySelector('#buildViewportWrap')?.closest('.viewport-panel')?.querySelector('.viewport-toolbar .viewport-actions');
-  if (!actions || document.querySelector('#referenceOverlayControls')) return;
-  const controls = document.createElement('div');
-  controls.id = 'referenceOverlayControls';
-  controls.className = 'reference-guide-controls';
-  controls.innerHTML = '<button id="referenceOverlayToggle" class="icon-button active" type="button" aria-pressed="true">REF</button><label title="Photo overlay opacity"><span>Opacity</span><input id="referenceOverlayOpacity" type="range" min="10" max="80" value="38" /></label><label title="Photo overlay scale"><span>Scale</span><input id="referenceOverlayScale" type="range" min="65" max="140" value="100" /></label>';
-  actions.prepend(controls);
-  document.querySelector('#referenceOverlayToggle').addEventListener('click', () => {
-    referenceOverlaySettings.enabled = !referenceOverlaySettings.enabled;
-    syncReferenceOverlay();
-  });
-  document.querySelector('#referenceOverlayOpacity').addEventListener('input', event => {
-    referenceOverlaySettings.opacity = Number(event.target.value);
-    syncReferenceOverlay();
-  });
-  document.querySelector('#referenceOverlayScale').addEventListener('input', event => {
-    referenceOverlaySettings.scale = Number(event.target.value);
-    syncReferenceOverlay();
-  });
-}
+
 `;
-    source = source.replace(viewsMarker, `${viewsMarker}\n${helpers}`);
+    source = source.replace(fitFunctionMarker, `${fitFunction}${fitFunctionMarker}`);
   }
 
-  const viewMarker = 'const view={canvas,renderer,scene,camera:cameraObj,controls,model:null,disposed:false};';
-  if (source.includes(viewMarker) && !source.includes('referenceOverlay:new ReferenceOverlayManager')) {
-    source = source.replace(viewMarker, 'const view={canvas,renderer,scene,camera:cameraObj,controls,model:null,disposed:false,referenceOverlay:new ReferenceOverlayManager(THREE,scene)};');
+  // Run the fitting pass as soon as references change, including file-picker
+  // and drag/drop uploads. The input images remain local to this browser.
+  const pickerMarker = `        state.references.push({role:slot.role,label:slot.label,name:file.name,dataUrl});
+        renderReferenceGrid();
+        toast(\x60${'${slot.label}'} reference added locally. No upload was made.\x60);`;
+  if (source.includes(pickerMarker) && !source.includes('void rebuildTwoViewFit();\n        toast')) {
+    source = source.replace(pickerMarker, pickerMarker.replace('        toast(', '        void rebuildTwoViewFit();\n        toast('));
   }
 
-  const cameraMarker = "function setCamera(view,type='three') {\n  if(!view)return;\n  const target=view.controls.target;";
-  if (source.includes(cameraMarker) && !source.includes('view.cameraType=type;')) {
-    source = source.replace(cameraMarker, "function setCamera(view,type='three') {\n  if(!view)return;\n  view.cameraType=type;\n  const target=view.controls.target;");
-    source = source.replace('  view.controls.update();\n}\n\nfunction setViewModel', '  view.controls.update();\n  syncReferenceOverlay(view);\n}\n\nfunction setViewModel');
+  const dropMarker = `state.references.push({role:slot.role,label:slot.label,name:file.name,dataUrl});renderReferenceGrid();toast(\x60${'${slot.label}'} reference added locally.\x60);`;
+  if (source.includes(dropMarker)) {
+    source = source.replace(dropMarker, dropMarker.replace('toast(', 'void rebuildTwoViewFit();toast('));
   }
 
+  const removeMarker = "state.references=state.references.filter(item=>item.role!==slot.role);renderReferenceGrid();";
+  source = source.replaceAll(removeMarker, `${removeMarker}void rebuildTwoViewFit();`);
+
+  // Rebuild from saved local projects after their reference images are restored.
   source = source.replace(
-    '    view.disposed=true;\n    view.resizeObserver?.disconnect();',
-    '    view.referenceOverlay?.dispose();\n    view.disposed=true;\n    view.resizeObserver?.disconnect();'
-  );
-  source = source.replace(
-    "  $('#referenceCount').textContent=`${state.references.length} / 8`;\n}",
-    "  $('#referenceCount').textContent=`${state.references.length} / 8`;\n  syncReferenceOverlay();\n}"
-  );
-  source = source.replace(
-    "  createPageViews('build');\n  createAllAvatars();",
-    "  createPageViews('build');\n  installReferenceOverlayControls();\n  createAllAvatars();\n  syncReferenceOverlay();"
+    '  await loadSavedProject();\n  requestAnimationFrame(frame);',
+    '  await loadSavedProject();\n  await rebuildTwoViewFit();\n  requestAnimationFrame(frame);'
   );
 
   return source;
@@ -129,6 +145,7 @@ function installReferenceOverlayControls() {
 
 async function applyClientPatches(request, response, url) {
   if (!response || !response.ok || url.origin !== self.location.origin) return response;
+
   if (url.pathname.endsWith('/') || url.pathname.endsWith('/index.html')) {
     let html = await response.clone().text();
     if (!html.includes('workspace-ui.css')) {
@@ -137,13 +154,18 @@ async function applyClientPatches(request, response, url) {
         '<script defer src="./workspace-ui.js?v=3"></script>',
       ].join('\n');
       html = html.replace('</head>', `${additions}\n</head>`);
-      return rewrittenResponse(response, html);
     }
+    const oldNotice = '<strong>Important:</strong> two images do not contain enough information to recover hidden geometry or photo textures. This fitting mode creates a clean, editable base mesh; it is not a neural scan or Gaussian-splat conversion.';
+    const newNotice = '<strong>Two-view fitting:</strong> the actual mesh is reshaped to the front/side silhouettes and its surface vertex colours are projected from those views. This is approximate two-view silhouette fitting, not neural photogrammetry; hidden structure, separate clothing parts and fine surface relief remain inferred.';
+    if (html.includes(oldNotice)) html = html.replace(oldNotice, newNotice);
+    return rewrittenResponse(response, html);
   }
+
   if (url.pathname.endsWith('/src/main.js')) {
     const source = patchMainModule(await response.clone().text());
     return rewrittenResponse(response, source);
   }
+
   return response;
 }
 
@@ -154,6 +176,7 @@ self.addEventListener('fetch', event => {
   const sameOrigin = url.origin === self.location.origin;
   const threeCdn = THREE_PREFIXES.some(prefix => url.href.startsWith(prefix));
   if (!sameOrigin && !threeCdn) return;
+
   event.respondWith((async () => {
     const cache = await caches.open(CACHE_NAME);
     let response = await cache.match(request);
