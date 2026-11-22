@@ -1,0 +1,8 @@
+# Remove files accidentally extracted into a ZIP-name folder by the earlier updater.
+forma-studio-fix/README.md
+forma-studio-fix/bootstrap.js
+forma-studio-fix/index.html
+forma-studio-fix/src/main.js
+forma-studio-fix/styles.css
+forma-studio-fix/sw.js
+forma-studio-fix/upload/README.md
