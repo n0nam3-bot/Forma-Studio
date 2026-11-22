@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0d12" />
+  <meta name="description" content="Forma Studio — local-first humanoid fitting, skeletal posing, motion editing and animated GLB export." />
+  <title>Forma Studio — Character Lab</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#studio" aria-label="Forma Studio home">
+        <span class="brand-mark"><span></span><span></span><span></span></span>
+        <span class="brand-name">FORMA<span>STUDIO</span></span>
+      </a>
+      <div class="project-heading">
+        <span class="eyebrow">CHARACTER LAB</span>
+        <input id="projectName" class="project-name" value="Untitled character" aria-label="Project name" maxlength="48" />
+      </div>
+      <div class="top-actions">
+        <span class="local-pill"><i></i> LOCAL PROJECT</span>
+        <label class="button button-quiet open-project-label" for="openProjectInput"><span class="button-icon">↗</span> Open<input id="openProjectInput" type="file" accept=".forma,.json,application/json" hidden /></label>
+        <button id="saveProject" class="button button-quiet" type="button"><span class="button-icon">▣</span> Save</button>
+        <button id="exportTop" class="button button-primary" type="button"><span class="button-icon">↓</span> Export GLB</button>
+        <button id="menuToggle" class="icon-button menu-toggle" type="button" aria-label="Open menu">☰</button>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-label">WORKSPACE</div>
+        <button class="nav-item active" data-page="build" type="button"><span class="nav-icon">◈</span><span>Build</span><small>01</small></button>
+        <button class="nav-item" data-page="rig" type="button"><span class="nav-icon">⌘</span><span>Rig & pose</span><small>02</small></button>
+        <button class="nav-item" data-page="animate" type="button"><span class="nav-icon">◷</span><span>Animate</span><small>03</small></button>
+        <button class="nav-item" data-page="export" type="button"><span class="nav-icon">⇩</span><span>Export</span><small>04</small></button>
+        <div class="sidebar-spacer"></div>
+        <div class="sidebar-card">
+          <div class="sidebar-card-icon">✳</div>
+          <strong>On-device by design</strong>
+          <p>Your images and projects stay in this browser. No AI keys, cloud uploads or usage meter.</p>
+          <span class="privacy-check">● LOCAL PROCESSING</span>
+        </div>
+        <button class="nav-item help-nav" data-page="help" type="button"><span class="nav-icon">?</span><span>Workflow guide</span></button>
+        <div class="sidebar-foot">FORMA STUDIO <span>·</span> 0.9.1</div>
+      </aside>
+
+      <main class="main-content" id="mainContent">
+        <section class="page-panel active" id="page-build" data-page-panel="build">
+          <div class="page-intro">
+            <div>
+              <div class="eyebrow">STEP 01 / CHARACTER FOUNDATION</div>
+              <h1>Build your <em>character.</em></h1>
+              <p>Use reference views to guide proportions, then shape an editable humanoid mesh.</p>
+            </div>
+            <div class="intro-status"><span class="status-dot"></span> Workspace ready</div>
+          </div>
+          <div class="build-layout">
+            <section class="panel reference-panel">
+              <div class="panel-heading">
+                <div><span class="eyebrow">01 — INPUT</span><h2>Reference views</h2></div>
+                <span class="counter" id="referenceCount">0 / 8</span>
+              </div>
+              <p class="panel-copy">Add stationary images of the same character. A front and side view are the minimum; extra angles reduce guesswork. Plain, high-contrast backgrounds help estimate the silhouette.</p>
+              <div class="reference-grid" id="referenceGrid">
+                <label class="reference-slot primary-slot" data-role="front">
+                  <input type="file" accept="image/png,image/jpeg,image/webp" hidden />
+                  <span class="slot-add">＋</span><strong>Front</strong><small>Required</small>
+                </label>
+                <label class="reference-slot primary-slot" data-role="side">
+                  <input type="file" accept="image/png,image/jpeg,image/webp" hidden />
+                  <span class="slot-add">＋</span><strong>Side</strong><small>Required</small>
+                </label>
+                <label class="reference-slot" data-role="back">
+                  <input type="file" accept="image/png,image/jpeg,image/webp" hidden />
+                  <span class="slot-add">＋</span><strong>Back</strong><small>Optional</small>
+                </label>
+                <label class="reference-slot" data-role="threeQuarter">
+                  <input type="file" accept="image/png,image/jpeg,image/webp" hidden />
+                  <span class="slot-add">＋</span><strong>3/4 view</strong><small>Optional</small>
+                </label>
+              </div>
+              <button id="fitReferences" class="button button-outline full-width fit-reference-button" type="button">Fit proportions from views <span>↗</span></button>
+              <div class="extra-reference-row">
+                <button id="addReference" class="text-button" type="button">＋ Add another angle</button>
+                <span>Up to 8 images</span>
+              </div>
+              <div class="reference-tips">
+                <div class="tip-icon">⌁</div>
+                <div><strong>Capture tip</strong><p>Keep the character in the same neutral pose, with even lighting and a plain background. For photogrammetry, use 20–60 overlapping photos rather than only two.</p></div>
+              </div>
+              <div class="divider"></div>
+              <div class="panel-heading compact-heading"><div><span class="eyebrow">02 — MODEL SOURCE</span><h2>Choose a starting point</h2></div></div>
+              <div class="source-choice selected" data-source="fitted">
+                <span class="radio-dot"></span><div><strong>Fit a humanoid from proportions</strong><p>Builds an editable, rigged character that you refine against the uploaded views.</p></div><span class="source-tag">BROWSER</span>
+              </div>
+              <label class="source-choice import-choice" for="meshImport">
+                <span class="radio-dot"></span><div><strong>Import a reconstructed mesh</strong><p>Bring in a GLB/GLTF, OBJ or PLY created in Blender, Meshroom or another tool.</p></div><span class="source-tag">MESH</span>
+                <input id="meshImport" type="file" accept=".glb,.gltf,.obj,.ply,model/gltf-binary,model/gltf+json" hidden />
+              </label>
+              <div class="notice-box"><strong>Important:</strong> two images do not contain enough information to recover hidden geometry or photo textures. This fitting mode creates a clean, editable base mesh; it is not a neural scan or Gaussian-splat conversion.</div>
+            </section>
+
+            <section class="panel viewport-panel">
+              <div class="viewport-toolbar">
+                <div><span class="eyebrow">LIVE MODEL VIEW</span><span class="model-label" id="modelSourceLabel">PARAMETRIC HUMANOID · SKINNED</span></div>
+                <div class="viewport-actions">
+                  <div class="segmented camera-switch" role="group" aria-label="Camera view">
+                    <button class="active" data-camera="front" type="button">Front</button><button data-camera="side" type="button">Side</button><button data-camera="three" type="button">3/4</button>
+                  </div>
+                  <button id="toggleSkeleton" class="icon-button" type="button" title="Toggle skeleton">⌘</button>
+                  <button id="resetCamera" class="icon-button" type="button" title="Reset camera">↺</button>
+                </div>
+              </div>
+              <div class="viewport-wrap" id="buildViewportWrap">
+                <canvas id="buildCanvas" aria-label="3D character preview"></canvas>
+                <div class="viewport-overlay top-left"><span class="live-dot"></span> LIVE PREVIEW</div>
+                <div class="viewport-overlay bottom-left"><span id="meshStats">22 BONES · 1 SKINNED MESH</span></div>
+                <div class="viewport-overlay bottom-right"><span>DRAG TO ORBIT · SCROLL TO ZOOM</span></div>
+                <div class="viewport-loading" id="viewportLoading"><div class="loader-ring"></div><span>Preparing 3D viewport…</span></div>
+              </div>
+              <div class="viewport-footer"><span><i class="legend-dot model-dot"></i> Character mesh</span><span><i class="legend-dot rig-dot"></i> Skeleton overlay</span><span id="viewportHint">Select a proportion to shape the model</span></div>
+            </section>
+
+            <aside class="panel shape-panel">
+              <div class="panel-heading"><div><span class="eyebrow">03 — SHAPE</span><h2>Proportions</h2></div><button id="resetShape" class="text-button" type="button">Reset</button></div>
+              <div class="preset-row"><button class="preset active" data-preset="balanced" type="button">Balanced</button><button class="preset" data-preset="athletic" type="button">Athletic</button><button class="preset" data-preset="stylized" type="button">Stylized</button></div>
+              <div class="range-group"><div class="range-label"><label for="heightRange">Overall height</label><output id="heightOut">100%</output></div><input id="heightRange" type="range" min="85" max="115" value="100" /></div>
+              <div class="shape-section-title">UPPER BODY</div>
+              <div class="range-group"><div class="range-label"><label for="shoulderRange">Shoulder width</label><output id="shoulderOut">100%</output></div><input id="shoulderRange" type="range" min="75" max="135" value="100" /></div>
+              <div class="range-group"><div class="range-label"><label for="chestRange">Chest volume</label><output id="chestOut">100%</output></div><input id="chestRange" type="range" min="70" max="135" value="100" /></div>
+              <div class="range-group"><div class="range-label"><label for="waistRange">Waist width</label><output id="waistOut">100%</output></div><input id="waistRange" type="range" min="70" max="135" value="100" /></div>
+              <div class="shape-section-title">LOWER BODY</div>
+              <div class="range-group"><div class="range-label"><label for="hipRange">Hip width</label><output id="hipOut">100%</output></div><input id="hipRange" type="range" min="75" max="140" value="100" /></div>
+              <div class="range-group"><div class="range-label"><label for="armRange">Arm length</label><output id="armOut">100%</output></div><input id="armRange" type="range" min="80" max="120" value="100" /></div>
+              <div class="range-group"><div class="range-label"><label for="legRange">Leg length</label><output id="legOut">100%</output></div><input id="legRange" type="range" min="80" max="120" value="100" /></div>
+              <button id="applyShape" class="button button-primary full-width" type="button">Apply proportions <span>↗</span></button>
+              <p class="small-muted">Changes rebuild the base body and align its standard humanoid skeleton. Fine-tune the joint placement in Rig & pose.</p>
+            </aside>
+          </div>
+        </section>
+
+        <section class="page-panel" id="page-rig" data-page-panel="rig">
+          <div class="page-intro">
+            <div><div class="eyebrow">STEP 02 / SKELETON & DEFORMATION</div><h1>Give it a <em>structure.</em></h1><p>Inspect named bones, pose joints, and keep rotations within human-friendly limits.</p></div>
+            <div class="intro-status"><span class="status-dot"></span> 22-bone humanoid rig</div>
+          </div>
+          <div class="rig-layout">
+            <section class="panel rig-view-panel">
+              <div class="viewport-toolbar"><div><span class="eyebrow">SKELETON EDITOR</span><span class="model-label">SELECT A JOINT TO EDIT</span></div><div class="viewport-actions"><button class="icon-button" id="rigResetPose" type="button" title="Reset pose">↺</button><button class="icon-button" id="rigToggleBones" type="button" title="Toggle bones">⌘</button></div></div>
+              <div class="viewport-wrap rig-viewport-wrap"><canvas id="rigCanvas" aria-label="Rigged character posing view"></canvas><div class="viewport-overlay top-left"><span class="live-dot"></span> RIG PREVIEW</div><div class="viewport-overlay bottom-left">DRAG JOINT CONTROLS · ORBIT CAMERA</div></div>
+              <div class="joint-readout"><span class="joint-indicator"></span><span id="selectedBoneReadout">Hips</span><span class="joint-sub" id="jointTypeReadout">PELVIS · ROOT</span></div>
+            </section>
+            <section class="panel bone-panel">
+              <div class="panel-heading"><div><span class="eyebrow">RIG HIERARCHY</span><h2>Skeleton</h2></div><span class="counter">22 BONES</span></div>
+              <div class="bone-filter"><input id="boneSearch" type="search" placeholder="Search bones…" aria-label="Search bones" /><span>⌕</span></div>
+              <div class="bone-list" id="boneList">
+                <div class="bone-group-label">CORE</div>
+                <button class="bone-row active" data-bone="Hips" type="button"><span class="bone-glyph">●</span>Hips<span class="bone-role">ROOT</span></button>
+                <button class="bone-row" data-bone="Spine" type="button"><span class="bone-glyph">┆</span>Spine</button>
+                <button class="bone-row" data-bone="SpineMid" type="button"><span class="bone-glyph">┆</span>Spine mid</button>
+                <button class="bone-row" data-bone="Chest" type="button"><span class="bone-glyph">┆</span>Chest</button>
+                <button class="bone-row" data-bone="Neck" type="button"><span class="bone-glyph">┆</span>Neck</button>
+                <button class="bone-row" data-bone="Head" type="button"><span class="bone-glyph">○</span>Head</button>
+                <div class="bone-group-label">LEFT ARM</div>
+                <button class="bone-row" data-bone="Clavicle_L" type="button"><span class="bone-glyph">╱</span>Clavicle L</button>
+                <button class="bone-row" data-bone="UpperArm_L" type="button"><span class="bone-glyph">╱</span>Upper arm L</button>
+                <button class="bone-row" data-bone="LowerArm_L" type="button"><span class="bone-glyph">╱</span>Lower arm L</button>
+                <button class="bone-row" data-bone="Hand_L" type="button"><span class="bone-glyph">◇</span>Hand L</button>
+                <div class="bone-group-label">RIGHT ARM</div>
+                <button class="bone-row" data-bone="Clavicle_R" type="button"><span class="bone-glyph">╲</span>Clavicle R</button>
+                <button class="bone-row" data-bone="UpperArm_R" type="button"><span class="bone-glyph">╲</span>Upper arm R</button>
+                <button class="bone-row" data-bone="LowerArm_R" type="button"><span class="bone-glyph">╲</span>Lower arm R</button>
+                <button class="bone-row" data-bone="Hand_R" type="button"><span class="bone-glyph">◇</span>Hand R</button>
+                <div class="bone-group-label">LEFT LEG</div>
+                <button class="bone-row" data-bone="UpperLeg_L" type="button"><span class="bone-glyph">╲</span>Upper leg L</button>
+                <button class="bone-row" data-bone="LowerLeg_L" type="button"><span class="bone-glyph">╲</span>Lower leg L</button>
+                <button class="bone-row" data-bone="Foot_L" type="button"><span class="bone-glyph">◇</span>Foot L</button>
+                <button class="bone-row" data-bone="Toe_L" type="button"><span class="bone-glyph">◇</span>Toe L</button>
+                <div class="bone-group-label">RIGHT LEG</div>
+                <button class="bone-row" data-bone="UpperLeg_R" type="button"><span class="bone-glyph">╱</span>Upper leg R</button>
+                <button class="bone-row" data-bone="LowerLeg_R" type="button"><span class="bone-glyph">╱</span>Lower leg R</button>
+                <button class="bone-row" data-bone="Foot_R" type="button"><span class="bone-glyph">◇</span>Foot R</button>
+                <button class="bone-row" data-bone="Toe_R" type="button"><span class="bone-glyph">◇</span>Toe R</button>
+              </div>
+              <div class="divider"></div>
+              <div class="panel-heading compact-heading"><div><span class="eyebrow">JOINT TRANSFORM</span><h2 id="selectedBoneTitle">Hips</h2></div><button id="resetJoint" class="text-button" type="button">Reset</button></div>
+              <div class="rotation-control"><div><label for="rotX">X · FLEX / EXTEND</label><output id="rotXOut">0°</output></div><input id="rotX" type="range" min="-60" max="60" value="0" /></div>
+              <div class="rotation-control"><div><label for="rotY">Y · TWIST</label><output id="rotYOut">0°</output></div><input id="rotY" type="range" min="-60" max="60" value="0" /></div>
+              <div class="rotation-control"><div><label for="rotZ">Z · ABDUCT / ADDUCT</label><output id="rotZOut">0°</output></div><input id="rotZ" type="range" min="-60" max="60" value="0" /></div>
+              <div class="limit-note"><span>⌑</span><div><strong>Joint limits enabled</strong><p>Rotation controls clamp to the selected joint's configured range. Limits are anatomical guardrails, not a substitute for clinical motion data.</p></div></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="page-panel" id="page-animate" data-page-panel="animate">
+          <div class="page-intro">
+            <div><div class="eyebrow">STEP 03 / MOTION DESIGN</div><h1>Make it <em>move.</em></h1><p>Choose a motion, isolate a body region, or layer a gesture over a base action.</p></div>
+            <div class="intro-status"><span class="status-dot"></span> Dual-view sync enabled</div>
+          </div>
+          <div class="animation-workspace">
+            <section class="panel compare-panel">
+              <div class="compare-heading"><div><span class="eyebrow">SYNCHRONIZED MOTION COMPARISON</span><h2>Source motion <span>vs.</span> your character</h2></div><div class="sync-pill"><span class="live-dot"></span> SYNCED</div></div>
+              <div class="compare-viewports">
+                <div class="compare-view"><div class="compare-view-label"><span>01</span> SOURCE / MOTION RIG</div><canvas id="sourceCanvas" aria-label="Source motion reference preview"></canvas><div class="compare-caption" id="sourceClipCaption">Idle · full body</div></div>
+                <div class="compare-view result-view"><div class="compare-view-label"><span>02</span> RESULT / CHARACTER RIG</div><canvas id="resultCanvas" aria-label="Character motion result preview"></canvas><div class="compare-caption" id="resultClipCaption">Idle + no overlay</div></div>
+              </div>
+              <div class="timeline-controls">
+                <button id="playMotion" class="play-button" type="button" aria-label="Play motion">▶</button>
+                <button id="stopMotion" class="icon-button" type="button" title="Stop">■</button>
+                <div class="timeline-main"><div class="timeline-time"><span id="currentTime">00:00</span><span id="durationTime">00:02</span></div><input id="timelineRange" type="range" min="0" max="1000" value="0" /><div class="timeline-ticks"><span>0s</span><span>25%</span><span>50%</span><span>75%</span><span>END</span></div></div>
+                <label class="speed-select">SPEED<select id="playSpeed"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>
+              </div>
+            </section>
+            <div class="motion-lower-grid">
+              <section class="panel motion-library-panel">
+                <div class="panel-heading"><div><span class="eyebrow">MOTION LIBRARY</span><h2>Choose a movement</h2></div><span class="counter" id="motionCount">12 CLIPS</span></div>
+                <div class="motion-filters" id="motionFilters"><button class="active" data-filter="all" type="button">All</button><button data-filter="full" type="button">Full body</button><button data-filter="upper" type="button">Upper</button><button data-filter="lower" type="button">Lower</button><button data-filter="gesture" type="button">Gesture</button></div>
+                <div class="motion-grid" id="motionGrid">
+                  <button class="motion-card active" data-motion="Idle" type="button"><span class="motion-card-icon">◌</span><strong>Idle</strong><small>Full body · loop</small></button>
+                  <button class="motion-card" data-motion="Walk" type="button"><span class="motion-card-icon">⇢</span><strong>Walk</strong><small>Full body · loop</small></button>
+                  <button class="motion-card" data-motion="Run" type="button"><span class="motion-card-icon">»</span><strong>Run</strong><small>Full body · loop</small></button>
+                  <button class="motion-card" data-motion="Crouch" type="button"><span class="motion-card-icon">⌄</span><strong>Crouch</strong><small>Full body · loop</small></button>
+                  <button class="motion-card" data-motion="Jump" type="button"><span class="motion-card-icon">↟</span><strong>Jump</strong><small>Full body · once</small></button>
+                  <button class="motion-card" data-motion="Wave" type="button"><span class="motion-card-icon">✋</span><strong>Wave</strong><small>Right arm · loop</small></button>
+                  <button class="motion-card" data-motion="Punch" type="button"><span class="motion-card-icon">✦</span><strong>Punch</strong><small>Upper body · once</small></button>
+                  <button class="motion-card" data-motion="Kick" type="button"><span class="motion-card-icon">➶</span><strong>Kick</strong><small>Right leg · once</small></button>
+                  <button class="motion-card" data-motion="Sword Slash" type="button"><span class="motion-card-icon">╱</span><strong>Sword slash</strong><small>Upper body · once</small></button>
+                  <button class="motion-card" data-motion="Hit React" type="button"><span class="motion-card-icon">✧</span><strong>Hit react</strong><small>Upper body · once</small></button>
+                  <button class="motion-card" data-motion="Roll" type="button"><span class="motion-card-icon">⤾</span><strong>Roll</strong><small>Full body · once</small></button>
+                  <button class="motion-card" data-motion="Nod" type="button"><span class="motion-card-icon">⌄</span><strong>Nod</strong><small>Head · loop</small></button>
+                </div>
+                <div class="asset-credit">Built-in motions are procedural joint curves. Imported GLB animation data is preserved on direct export, but external clips are not yet retargeted or edited in this workspace.</div>
+              </section>
+              <section class="panel motion-edit-panel">
+                <div class="panel-heading"><div><span class="eyebrow">MOTION LAYERS</span><h2>Blend & isolate</h2></div><button id="clearOverlay" class="text-button" type="button">Clear</button></div>
+                <div class="layer-card"><div class="layer-top"><span class="layer-number">A</span><div><strong>Base motion</strong><small id="baseMotionLabel">Idle · full body</small></div><span class="layer-badge">SOURCE</span></div><div class="layer-bottom"><span class="layer-line"></span><span>Always drives the reference rig</span></div></div>
+                <div class="overlay-connector">＋</div>
+                <div class="layer-card overlay-card"><div class="layer-top"><span class="layer-number">B</span><div><strong>Overlay motion</strong><small id="overlayMotionLabel">No overlay selected</small></div><span class="layer-badge accent-badge">ADDITIVE</span></div><div class="layer-controls"><label for="overlaySelect">Motion<select id="overlaySelect"><option value="">Choose an overlay…</option><option>Wave</option><option>Head Nod</option><option>Guard</option><option>Point</option><option>Breathing</option></select></label><label for="maskSelect">Apply to<select id="maskSelect"><option value="arms">Both arms</option><option value="rightArm">Right arm</option><option value="leftArm">Left arm</option><option value="upper">Upper body</option><option value="lower">Lower body</option><option value="head">Head & neck</option><option value="full">Full body</option></select></label><div class="range-group blend-range"><div class="range-label"><label for="blendRange">Blend weight</label><output id="blendOut">65%</output></div><input id="blendRange" type="range" min="0" max="100" value="65" /></div></div></div>
+                <div class="layer-hint"><span>ⓘ</span> The source view plays the base clip only. The result view combines the base and masked overlay so differences are easy to compare.</div>
+                <div class="custom-motion-actions"><button id="addKeyframe" class="button button-quiet" type="button">＋ Add keyframe</button><button id="saveCustomMotion" class="button button-outline" type="button">Save custom motion</button></div>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <section class="page-panel" id="page-export" data-page-panel="export">
+          <div class="page-intro"><div><div class="eyebrow">STEP 04 / DELIVERY</div><h1>Ready for the <em>engine.</em></h1><p>Validate your character, export an animated GLB, and take it into your game engine.</p></div><div class="intro-status"><span class="status-dot"></span> Local export</div></div>
+          <div class="export-layout">
+            <section class="panel export-preview-panel"><div class="panel-heading"><div><span class="eyebrow">FINAL CHARACTER</span><h2>Export preview</h2></div><span class="export-ready"><i></i> READY TO PACKAGE</span></div><div class="export-preview"><canvas id="exportCanvas" aria-label="Final character export preview"></canvas><div class="export-preview-caption"><strong id="exportCharacterName">Untitled character</strong><span>SKINNED HUMANOID · GLB</span></div></div><div class="export-primary-actions"><button id="downloadGlb" class="button button-primary" type="button">↓ Download animated GLB</button><button id="downloadProject" class="button button-quiet" type="button">⇩ Project file (.forma)</button></div></section>
+            <section class="panel validation-panel"><div class="panel-heading"><div><span class="eyebrow">PRE-FLIGHT CHECKS</span><h2>Model validation</h2></div><span class="counter" id="validationCount">4 / 5</span></div><div class="validation-list" id="validationList"><div class="validation-row pass"><span class="validation-icon">✓</span><div><strong>Humanoid skeleton</strong><small>Named bones and parent hierarchy found</small></div><span>PASS</span></div><div class="validation-row pass"><span class="validation-icon">✓</span><div><strong>Skin binding</strong><small>Vertex weights normalized to four influences</small></div><span>PASS</span></div><div class="validation-row pass"><span class="validation-icon">✓</span><div><strong>Motion library</strong><small>Procedural clips ready for baking</small></div><span>PASS</span></div><div class="validation-row pass"><span class="validation-icon">✓</span><div><strong>GLB export path</strong><small>glTF 2.0 binary exporter available</small></div><span>PASS</span></div><div class="validation-row warn"><span class="validation-icon">!</span><div><strong>Game-ready surface review</strong><small>Inspect topology, UVs, materials and deformation in a DCC tool</small></div><span>REVIEW</span></div></div><div class="validation-note">Automatic checks cover this app's generated rig and export path. They do not certify the character as production-ready for every game: inspect deformation, silhouette, UVs and materials in Blender or your target engine.</div></section>
+            <section class="panel format-panel"><div class="panel-heading"><div><span class="eyebrow">FORMAT & COMPATIBILITY</span><h2>Engine handoff</h2></div></div><div class="format-row"><div class="format-badge">GLB</div><div><strong>glTF 2.0 binary</strong><p>Mesh, skeleton, skin weights, PBR material and baked animation clips in one file.</p><span class="format-state">DIRECT EXPORT · RECOMMENDED</span></div></div><div class="format-row"><div class="format-badge muted">FBX</div><div><strong>FBX interchange</strong><p>Convert the GLB through Blender's free FBX exporter when your pipeline specifically requires FBX.</p><span class="format-state">BLENDER CONVERSION</span></div></div><div class="engine-chips"><span>GODOT</span><span>UNREAL ENGINE</span><span>UNITY</span><span>BLENDER</span></div></section>
+          </div>
+        </section>
+
+        <section class="page-panel" id="page-help" data-page-panel="help">
+          <div class="page-intro"><div><div class="eyebrow">DOCUMENTATION / WORKFLOW</div><h1>Know what the tool <em>can do.</em></h1><p>Practical notes on reconstruction, rigging, motion and formats.</p></div></div>
+          <div class="help-grid">
+            <article class="panel help-card"><span class="help-number">01</span><h2>Images are references, not a scan</h2><p>Two orthogonal views constrain a rough silhouette but leave the back, depth variation, occluded limbs and clothing folds ambiguous. The fitting workflow makes a clean editable base and gives you proportion controls. For photogrammetry, capture overlapping views around the subject; each surface should appear in several images.</p><div class="help-callout">Gaussian splats are excellent for novel-view rendering, but a splat cloud is not automatically a watertight, skinned game mesh.</div></article>
+            <article class="panel help-card"><span class="help-number">02</span><h2>From scan to game mesh</h2><p>For a real scan, use COLMAP or AliceVision/Meshroom to estimate cameras and reconstruct geometry. Clean the result, remove floating fragments, remesh/retopologize, unwrap UVs, bake textures and validate the surface. Import the resulting GLB/OBJ/PLY here for viewing; complex cleanup remains a desktop DCC task.</p><a href="https://colmap.github.io/" target="_blank" rel="noreferrer">COLMAP documentation ↗</a><a href="https://alicevision.org/" target="_blank" rel="noreferrer">AliceVision / Meshroom ↗</a></article>
+            <article class="panel help-card"><span class="help-number">03</span><h2>Rigging & deformation</h2><p>The generated humanoid uses a named 22-bone skeleton and four-influence skin weights. Joint limits keep editor poses in configured ranges. For production work, inspect shoulder, hip, elbow and knee deformation; add twist bones, corrective shapes, facial rigs or custom secondary motion where needed.</p><a href="https://www.blender.org/" target="_blank" rel="noreferrer">Blender (free DCC) ↗</a></article>
+            <article class="panel help-card"><span class="help-number">04</span><h2>Motion & export</h2><p>Procedural motion clips animate joint rotations. The source preview displays the selected base action; the result preview displays the base plus an additive, body-part-masked layer. GLB export bakes the built-in and custom clips at 30 fps. External clips need to be retargeted in Blender or your game engine; this page does not yet retarget animations from unrelated skeletons.</p><a href="https://www.khronos.org/gltf/" target="_blank" rel="noreferrer">Khronos glTF specification ↗</a><a href="https://github.com/Kinemiq/free-game-animations" target="_blank" rel="noreferrer">CC0 game animation reference pack ↗</a></article>
+            <article class="panel help-card wide-help"><span class="help-number">05</span><h2>Cost & privacy model</h2><p>There are no paid APIs, accounts, AI tokens or hosted GPU calls. Images and project data stay in browser memory / IndexedDB unless you explicitly download them. Three.js is loaded from a free public CDN, so the first launch requires internet access. The actual reconstruction workload is not secretly sent to a server. Heavy photogrammetry and neural Gaussian-splat training still require a capable local PC and suitable open-source tools; this page does not promise phone-based neural reconstruction.</p><div class="help-callout">For an actual high-fidelity scan, capture more images and process them locally in Meshroom/COLMAP, or use a local GPU workflow. Then import the resulting mesh for inspection and packaging. This page does not currently auto-rig imported meshes or retarget their animation clips onto the generated humanoid skeleton.</div></article>
+          </div>
+        </section>
+
+        <footer class="app-footer"><span>FORMA STUDIO <b>·</b> LOCAL-FIRST CHARACTER WORKFLOW</span><span>NO PAID API · NO CLOUD INFERENCE · YOUR ASSETS STAY YOURS</span></footer>
+      </main>
+    </div>
+  </div>
+
+  <div class="toast-region" id="toastRegion" aria-live="polite"></div>
+  <dialog id="confirmDialog" class="app-dialog"><form method="dialog"><div class="dialog-kicker">FORMA STUDIO</div><h2 id="dialogTitle">Save project?</h2><p id="dialogText">Your project will be stored in this browser.</p><div class="dialog-actions"><button class="button button-quiet" value="cancel">Cancel</button><button class="button button-primary" id="dialogConfirm" value="confirm">Continue</button></div></form></dialog>
+  <script src="./bootstrap.js" defer></script>
+</body>
+</html>
