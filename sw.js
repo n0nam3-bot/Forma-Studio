@@ -1,17 +1,9 @@
-const CACHE_NAME = 'forma-studio-visual-hull-v6';
+const CACHE_NAME = 'forma-studio-reconstruction-v6';
 const APP_FILES = [
-  './',
-  './index.html',
-  './bootstrap.js',
-  './styles.css',
-  './workspace-ui.css',
-  './workspace-ui.js',
-  './src/main.js',
-  './src/skeleton-helper-compat.js',
-  './src/visual-hull.js',
-  './src/model.js',
-  './src/motion.js',
-  './src/persistence.js',
+  './', './index.html', './bootstrap.js', './styles.css',
+  './workspace-ui.css', './workspace-ui.js', './src/main.js',
+  './src/skeleton-helper-compat.js', './src/visual-hull.js?v=6',
+  './src/model.js', './src/motion.js', './src/persistence.js',
 ];
 const THREE_PREFIXES = [
   'https://cdn.jsdelivr.net/npm/three@0.180.0/',
@@ -44,14 +36,23 @@ function rewrittenResponse(response, body) {
   return new Response(body, { status: response.status, statusText: response.statusText, headers });
 }
 
+function patchVisualHullModule(source) {
+  // A previous deployed copy omitted `row` from this destructuring. The review
+  // button listener below needs the row returned by makeEditorUI(). Patch both
+  // old cached source and keep the replacement idempotent.
+  source = source.replace(
+    /const\s*\{\s*editor\s*\}\s*=\s*makeEditorUI\(panel\);/,
+    'const { row, editor } = makeEditorUI(panel);'
+  );
+  return source;
+}
+
 function patchMainModule(source) {
-  const importLines = [
-    "import './skeleton-helper-compat.js';",
-    "import { installVisualHullWorkflow, applyVisualHullToAvatar } from './visual-hull.js';",
-  ];
-  for (const line of importLines) {
-    if (!source.includes(line)) source = `${line}\n${source}`;
-  }
+  const compatImport = "import './skeleton-helper-compat.js';";
+  const reconstructionImport = "import { installVisualHullWorkflow, applyVisualHullToAvatar } from './visual-hull.js?v=6';";
+  if (!source.includes(compatImport)) source = `${compatImport}\n${source}`;
+  if (!source.includes('from \'./visual-hull.js')) source = `${reconstructionImport}\n${source}`;
+  else source = source.replace(/from\s+['"]\.\/visual-hull\.js(?:\?v=\d+)?['"]/, "from './visual-hull.js?v=6'");
 
   if (source.includes('const state = {') && !source.includes('visualHullGeometry:null')) {
     source = source.replace('  shape:{...DEFAULT_SHAPE},', '  shape:{...DEFAULT_SHAPE},\n  visualHullGeometry:null,');
@@ -75,21 +76,26 @@ function patchMainModule(source) {
   const initReferenceMarker = '  initReferences();';
   if (source.includes(initReferenceMarker) && !source.includes('installVisualHullWorkflow(THREE,')) {
     const setup = `
-  installVisualHullWorkflow(THREE, {
-    state,
-    onReconstructed: geometry => {
-      state.visualHullGeometry=geometry;
-      [buildAvatar,rigAvatar,sourceAvatar,resultAvatar,exportAvatar].filter(Boolean).forEach(avatar=>applyVisualHullToAvatar(THREE,avatar,geometry));
-      updateSourceChoice();
-      $('#modelSourceLabel').textContent='MULTI-VIEW VISUAL HULL · SKINNED';
-      $('#meshStats').textContent=\`${'${geometry.userData.formaReconstruction.vertexCount.toLocaleString()}'} VERTICES · ${'${geometry.userData.formaReconstruction.triangleCount.toLocaleString()}'} TRIANGLES\`;
-      $('#viewportHint').textContent='Actual mesh generated from the intersected reference silhouettes';
-      toast('Multi-view 3D volume reconstructed and bound to the character rig. Review the silhouette and surface before export.','success',7000);
-    }
-  });`;
+  try {
+    installVisualHullWorkflow(THREE, {
+      state,
+      onReconstructed: geometry => {
+        state.visualHullGeometry=geometry;
+        [buildAvatar,rigAvatar,sourceAvatar,resultAvatar,exportAvatar].filter(Boolean).forEach(avatar=>applyVisualHullToAvatar(THREE,avatar,geometry));
+        updateSourceChoice();
+        $('#modelSourceLabel').textContent='MULTI-VIEW VISUAL HULL · SKINNED';
+        const info=geometry.userData.formaReconstruction||{};
+        $('#meshStats').textContent=\`${'${Number(info.vertexCount||0).toLocaleString()}'} VERTICES · ${'${Number(info.triangleCount||0).toLocaleString()}'} TRIANGLES\`;
+        $('#viewportHint').textContent='Actual mesh generated from the intersected reference silhouettes';
+        toast('Multi-view 3D volume reconstructed and bound to the character rig. Review the silhouette and surface before export.','success',7000);
+      }
+    });
+  } catch (error) {
+    console.error('Visual-hull tools could not initialize:', error);
+    toast(\`Reconstruction tools unavailable: ${'${error?.message||error}'}\`, 'error', 8000);
+  }`;
     source = source.replace(initReferenceMarker, `${initReferenceMarker}${setup}`);
   }
-
   return source;
 }
 
@@ -119,10 +125,11 @@ async function applyClientPatches(response, url) {
   }
 
   if (url.pathname.endsWith('/src/main.js')) {
-    const source = patchMainModule(await response.clone().text());
-    return rewrittenResponse(response, source);
+    return rewrittenResponse(response, patchMainModule(await response.clone().text()));
   }
-
+  if (url.pathname.endsWith('/src/visual-hull.js')) {
+    return rewrittenResponse(response, patchVisualHullModule(await response.clone().text()));
+  }
   return response;
 }
 
