@@ -576,7 +576,7 @@ export function installVisualHullWorkflow(THREE, { state, getAvatars, onReconstr
   fitButton.id = 'fitReferences';
   fitButton.textContent = 'Reconstruct 3D mesh from views';
   originalFit.replaceWith(fitButton);
-  const { editor } = makeEditorUI(panel);
+  const { row, editor } = makeEditorUI(panel);
   installStyles();
 
   let editorState = { reference: null, image: null, layout: null, mask: new Uint8Array(EDIT_W * EDIT_H), mode: 'paint', cropRect: null, pointerStart: null };
@@ -782,4 +782,13 @@ export function installVisualHullWorkflow(THREE, { state, getAvatars, onReconstr
 
   function onProgressComplete(setProgress) { setProgress(1, 'Reconstruction complete.'); }
   refreshViewOptions();
+
+  // The main uploader rebuilds #referenceGrid after each image is selected.
+  // Keep the angle selector in sync rather than requiring the user to close and
+  // reopen the review panel before the new view becomes available.
+  const referenceGrid = document.querySelector('#referenceGrid');
+  if (referenceGrid && typeof MutationObserver !== 'undefined') {
+    const referenceObserver = new MutationObserver(() => refreshViewOptions());
+    referenceObserver.observe(referenceGrid, { childList: true });
+  }
 }
