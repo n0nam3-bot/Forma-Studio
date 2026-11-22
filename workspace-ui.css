@@ -1,0 +1,116 @@
+/* Forma Studio focused workspace: tab content fits the available app window. */
+html, body { height: 100%; min-height: 100%; overflow: hidden; }
+.app-shell { height: 100dvh; min-height: 0; display: flex; flex-direction: column; }
+.topbar { height: 68px; min-height: 68px; flex: 0 0 68px; padding: 0 20px; gap: 20px; }
+.brand { width: 190px; flex: 0 0 190px; }
+.active-step-heading { display: flex; flex: 1 1 auto; min-width: 0; flex-direction: column; gap: 3px; overflow: hidden; }
+.active-step-heading .eyebrow { font-size: 8px; white-space: nowrap; }
+.active-step-heading strong { color: var(--text); font: 600 15px/1.15 'Space Grotesk', sans-serif; letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.top-actions { flex: 0 0 auto; gap: 7px; }
+.header-project-meta { display: flex; flex-direction: column; justify-content: center; gap: 2px; min-width: 112px; max-width: 160px; padding: 0 5px; }
+.header-project-meta .eyebrow { font-size: 7px; }
+.header-project-name { width: 100%; max-width: 150px; min-width: 0; font-size: 12px; }
+.workspace { height: calc(100dvh - 68px); min-height: 0; flex: 1 1 auto; overflow: hidden; }
+.sidebar { top: 68px; height: 100%; min-height: 0; }
+.main-content { height: 100%; min-height: 0; padding: 12px 14px; overflow: hidden; }
+.page-panel.active { display: flex; height: 100%; min-height: 0; flex-direction: column; overflow: hidden; }
+.page-intro { display: none !important; }
+.build-layout { height: 100%; min-height: 0; flex: 1 1 auto; grid-template-columns: minmax(235px, 285px) minmax(0, 1fr) minmax(220px, 265px); gap: 10px; overflow: hidden; }
+.reference-panel, .shape-panel { min-height: 0; max-height: 100%; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.viewport-panel { height: 100%; min-height: 0; }
+.viewport-wrap { min-height: 0; flex: 1 1 auto; }
+.rig-layout { height: 100%; min-height: 0; grid-template-columns: minmax(0, 1fr) minmax(310px, .9fr); overflow: hidden; }
+.rig-view-panel { min-height: 0; height: 100%; }
+.rig-viewport-wrap { min-height: 0; flex: 1 1 auto; }
+.bone-panel { max-height: 100%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.animation-workspace { height: 100%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.compare-viewports { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.export-layout { height: 100%; min-height: 0; overflow-y: auto; align-content: start; overscroll-behavior: contain; scrollbar-width: thin; }
+.help-grid { min-height: 0; overflow-y: auto; }
+
+@media (max-width: 1150px) and (min-width: 851px) {
+  .brand { width: 165px; flex-basis: 165px; }
+  .topbar { gap: 12px; padding: 0 13px; }
+  .active-step-heading strong { font-size: 13px; }
+  .header-project-meta { min-width: 92px; max-width: 115px; }
+  .header-project-name { font-size: 10px; }
+  .top-actions { gap: 5px; }
+  .top-actions .button { padding: 8px 9px; font-size: 10px; }
+  .local-pill { font-size: 7px; padding: 6px 7px; }
+  .build-layout { grid-template-columns: minmax(210px, 250px) minmax(0, 1fr) minmax(205px, 230px); }
+}
+
+@media (max-width: 850px) {
+  .topbar { height: 92px; min-height: 92px; flex-basis: 92px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: 38px 38px; gap: 4px 8px; padding: 6px 10px; }
+  .brand { grid-column: 1; grid-row: 1; width: auto; min-width: 0; flex-basis: auto; gap: 7px; }
+  .brand-mark { width: 23px; height: 23px; }
+  .brand-name { font-size: 12px; }
+  .active-step-heading { grid-column: 2; grid-row: 1; align-items: flex-end; text-align: right; }
+  .active-step-heading .eyebrow { font-size: 6px; letter-spacing: .08em; }
+  .active-step-heading strong { max-width: 100%; font-size: 11px; }
+  .top-actions { grid-column: 1 / -1; grid-row: 2; width: 100%; min-width: 0; margin: 0; justify-content: flex-end; gap: 5px; }
+  .top-actions .button { padding: 6px 8px; font-size: 9px; gap: 4px; }
+  .top-actions .button-icon { font-size: 12px; }
+  .local-pill { padding: 6px 7px; font-size: 7px; white-space: nowrap; }
+  .header-project-meta { flex: 1 1 auto; min-width: 82px; max-width: 125px; padding: 0 2px; }
+  .header-project-meta .eyebrow { font-size: 6px; }
+  .header-project-name { font-size: 9px; }
+  .menu-toggle { display: inline-flex; width: 30px; height: 30px; }
+  .workspace { height: calc(100dvh - 92px); min-height: 0; }
+  .sidebar { top: 92px; height: calc(100dvh - 92px); min-height: 0; }
+  .main-content { width: 100%; padding: 9px 10px 14px; height: 100%; overflow-y: auto; overscroll-behavior: contain; }
+  .page-panel.active { height: auto; min-height: 100%; overflow: visible; }
+  .build-layout { display: flex; height: auto; min-height: 0; flex-direction: column; overflow: visible; gap: 9px; }
+  .viewport-panel { order: 0; height: 44dvh; min-height: 285px; max-height: 430px; flex: 0 0 auto; }
+  .viewport-toolbar { min-height: 48px; padding: 8px 10px; }
+  .viewport-wrap { min-height: 0; flex: 1 1 auto; }
+  .viewport-footer { height: 30px; }
+  .reference-panel { order: 1; max-height: none; overflow: visible; padding: 13px; }
+  .shape-panel { order: 2; max-height: none; overflow: visible; padding: 13px; }
+  .reference-slot.primary-slot { height: 118px; }
+  .reference-slot { height: 104px; }
+  .rig-layout { display: flex; height: auto; min-height: 0; flex-direction: column; overflow: visible; gap: 9px; }
+  .rig-view-panel { height: 48dvh; min-height: 300px; flex: 0 0 auto; }
+  .rig-viewport-wrap { min-height: 0; }
+  .bone-panel { max-height: none; overflow: visible; padding: 13px; }
+  .bone-list { max-height: 245px; }
+  .animation-workspace { height: auto; overflow: visible; }
+  .compare-panel, .motion-library-panel, .motion-edit-panel { padding: 12px; }
+  .compare-viewports { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+  .compare-view { height: 225px; min-width: 0; }
+  .motion-lower-grid { grid-template-columns: 1fr; }
+  .export-layout { height: auto; overflow: visible; display: flex; flex-direction: column; }
+  .format-panel { grid-column: auto; }
+  .help-grid { overflow: visible; }
+}
+
+@media (max-width: 480px) {
+  .topbar { padding-left: 8px; padding-right: 8px; gap: 3px 5px; }
+  .brand-name { font-size: 10px; letter-spacing: .08em; }
+  .brand-mark { width: 21px; height: 21px; }
+  .active-step-heading .eyebrow { font-size: 5px; }
+  .active-step-heading strong { font-size: 10px; }
+  .top-actions { gap: 3px; }
+  .top-actions .button { padding: 6px 6px; font-size: 8px; }
+  .local-pill { font-size: 0; width: 22px; height: 24px; justify-content: center; padding: 0; gap: 0; }
+  .local-pill i { flex: 0 0 6px; }
+  .header-project-meta { min-width: 72px; max-width: 96px; }
+  .header-project-name { font-size: 8px; }
+  .open-project-label { display: none; }
+  .top-actions .button-primary { padding-left: 7px; padding-right: 7px; }
+  .top-actions .button-primary { font-size: 8px; }
+  .compare-view { height: 195px; }
+  .compare-view-label { font-size: 7px; left: 6px; top: 7px; }
+  .compare-caption { left: 6px; bottom: 6px; font-size: 7px; }
+  .motion-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-height: 700px) and (min-width: 851px) {
+  .topbar { height: 58px; min-height: 58px; flex-basis: 58px; }
+  .workspace { height: calc(100dvh - 58px); }
+  .sidebar { top: 58px; }
+  .reference-slot.primary-slot { height: 96px; }
+  .reference-slot { height: 82px; }
+  .viewport-toolbar { min-height: 48px; padding: 8px 11px; }
+  .viewport-footer { height: 29px; }
+}
