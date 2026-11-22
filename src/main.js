@@ -37,6 +37,9 @@ const views = {};
 let buildAvatar, rigAvatar, sourceAvatar, resultAvatar, exportAvatar;
 let lastFrame=0, lastToast=0, resizeObserver;
 let objectUrlToRevoke=null;
+let importedBuildPreview=null, importedExportPreview=null;
+const PAGE_VIEWS={build:['build'],rig:['rig'],animate:['source','result'],export:['export'],help:[]};
+const VIEW_CANVASES={build:'buildCanvas',rig:'rigCanvas',source:'sourceCanvas',result:'resultCanvas',export:'exportCanvas'};
 
 function toast(message,type='success',duration=3500) {
   const region=$('#toastRegion');
@@ -47,9 +50,36 @@ function toast(message,type='success',duration=3500) {
   setTimeout(()=>item.remove(),duration);
 }
 
+function createWebGLRenderer(canvas) {
+  const mobile=window.matchMedia?.('(max-width: 720px)').matches || (navigator.deviceMemory && navigator.deviceMemory<=4);
+  const options=mobile?[
+    {alpha:true,antialias:false,depth:true,stencil:false,powerPreference:'low-power',failIfMajorPerformanceCaveat:false,preserveDrawingBuffer:false},
+    {alpha:false,antialias:false,depth:true,stencil:false,powerPreference:'default',failIfMajorPerformanceCaveat:false,preserveDrawingBuffer:false},
+  ]:[
+    {alpha:true,antialias:true,depth:true,stencil:false,powerPreference:'high-performance',failIfMajorPerformanceCaveat:false,preserveDrawingBuffer:false},
+    {alpha:true,antialias:false,depth:true,stencil:false,powerPreference:'low-power',failIfMajorPerformanceCaveat:false,preserveDrawingBuffer:false},
+  ];
+  let lastError=null;
+  for(const attributes of options){
+    let context=null;
+    try{
+      context=canvas.getContext('webgl2',attributes);
+      if(!context)continue;
+      const renderer=new THREE.WebGLRenderer({canvas,context,antialias:attributes.antialias,alpha:attributes.alpha,powerPreference:attributes.powerPreference});
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,mobile?1:1.6));
+      return renderer;
+    }catch(error){
+      lastError=error;
+      try{context?.getExtension('WEBGL_lose_context')?.loseContext();}catch{}
+    }
+  }
+  const error=new Error(lastError?.message||'The browser did not grant a WebGL 2 graphics context.');
+  error.name='WebGLUnavailableError';
+  throw error;
+}
+
 function createView(canvas,{targetY=1.0,camera='three',showGrid=true}={}) {
-  const renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:true,powerPreference:window.innerWidth<720?'low-power':'high-performance'});
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,window.innerWidth<720?1.25:1.7));
+  const renderer=createWebGLRenderer(canvas);
   renderer.outputColorSpace=THREE.SRGBColorSpace;
   renderer.toneMapping=THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure=1.18;
@@ -96,6 +126,7 @@ function createView(canvas,{targetY=1.0,camera='three',showGrid=true}={}) {
 }
 
 function setCamera(view,type='three') {
+  if(!view)return;
   const target=view.controls.target;
   target.set(0,1.0,0);
   if (type==='front') view.camera.position.set(0,1.05,4.4);
@@ -182,20 +213,77 @@ function evaluateResultPose(progress) {
   return blendPose(base,overlay,state.overlayMask,state.blendWeight);
 }
 
-function createViews() {
-  try {
-    views.build=createView($('#buildCanvas'),{targetY:1.02,camera:'three'});
-    views.rig=createView($('#rigCanvas'),{targetY:1.02,camera:'front'});
-    views.source=createView($('#sourceCanvas'),{targetY:1.02,camera:'front'});
-    views.result=createView($('#resultCanvas'),{targetY:1.02,camera:'front'});
-    views.export=createView($('#exportCanvas'),{targetY:1.02,camera:'three'});
-    createAllAvatars();
-    $('#viewportLoading').classList.add('hidden');
-  } catch (error) {
-    console.error('WebGL initialization failed',error);
-    const loading=$('#viewportLoading');
-    loading.innerHTML='<strong>3D preview unavailable</strong><span>Enable WebGL in this browser or try a desktop browser with hardware acceleration.</span>';
-    toast('This browser could not start WebGL. The editing panels remain available, but 3D export needs the 3D engine.','error',7000);
+function pageCanvasKeys(page){return PAGE_VIEWS[page]||[];}
+
+function disposePageViews(page){
+  for(const key of pageCanvasKeys(page)){
+    const view=views[key];
+    if(!view)continue;
+    view.disposed=true;
+    view.resizeObserver?.disconnect();
+    if(!view.resizeObserver)window.removeEventListener('resize',view.resize);
+    try{view.controls.dispose();}catch{}
+    try{view.renderer.dispose();view.renderer.forceContextLoss();}catch{}
+    const replacement=view.canvas.cloneNode(false);
+    view.canvas.replaceWith(replacement);
+    delete views[key];
+  }
+}
+
+function viewportForPage(page){
+  if(page==='build')return $('#buildViewportWrap');
+  if(page==='rig')return $('.rig-viewport-wrap');
+  if(page==='animate')return $('.compare-viewports');
+  if(page==='export')return $('.export-preview');
+  return null;
+}
+
+function showWebGLError(page,error){
+  console.error('WebGL initialization failed',error);
+  const message=(error?.message||'Unknown graphics initialization error').replace(/\s+/g,' ').trim();
+  const mobile=window.matchMedia?.('(max-width: 720px)').matches;
+  const detail=message.includes('WebGL 2')||error?.name==='WebGLUnavailableError'
+    ? 'This browser or device did not provide a WebGL 2 graphics context.'
+    : `The graphics engine stopped while creating the preview (${message}).`;
+  const advice=mobile
+    ? 'Close other tabs using 3D or camera effects, turn off battery saver, update your browser, then retry. Some Android browsers or devices block WebGL 2.'
+    : 'Update your browser and graphics driver, enable hardware acceleration, close other 3D tabs, then retry.';
+  const status=$('.intro-status');
+  if(status)status.innerHTML='<span class="status-dot status-dot-warning"></span> 3D preview blocked · local editing available';
+  const host=viewportForPage(page);
+  if(!host)return;
+  let notice=host.querySelector('.webgl-fallback-notice');
+  if(!notice){notice=document.createElement('div');notice.className='webgl-fallback-notice';host.appendChild(notice);}
+  notice.innerHTML=`<strong>3D preview unavailable</strong><span>${detail}</span><span>${advice}</span><span>Your editable character, rig data and GLB export still run locally; only the live GPU preview is blocked.</span><button class="button button-outline" type="button">Retry 3D preview</button>`;
+  notice.querySelector('button')?.addEventListener('click',()=>window.location.reload());
+  if(page==='build')$('#viewportLoading')?.classList.add('hidden');
+  toast('3D preview could not start. Character editing and GLB export remain available.','error',6500);
+}
+
+function createPageViews(page){
+  const configs={
+    build:{build:{targetY:1.02,camera:'three'}},
+    rig:{rig:{targetY:1.02,camera:'front'}},
+    animate:{source:{targetY:1.02,camera:'front',showGrid:false},result:{targetY:1.02,camera:'front',showGrid:false}},
+    export:{export:{targetY:1.02,camera:'three'}},
+  };
+  const config=configs[page];
+  if(!config)return;
+  try{
+    for(const [key,settings] of Object.entries(config)){
+      if(!views[key])views[key]=createView($(`#${VIEW_CANVASES[key]}`),settings);
+    }
+    if(page==='build')setViewModel(views.build,importedBuildPreview||buildAvatar?.root);
+    if(page==='rig')setViewModel(views.rig,rigAvatar?.root);
+    if(page==='animate'){
+      setViewModel(views.source,sourceAvatar?.root);
+      setViewModel(views.result,resultAvatar?.root);
+    }
+    if(page==='export')setViewModel(views.export,importedExportPreview||exportAvatar?.root);
+    if(page==='build')$('#viewportLoading')?.classList.add('hidden');
+  }catch(error){
+    disposePageViews(page);
+    showWebGLError(page,error);
   }
 }
 
@@ -205,10 +293,13 @@ function initNavigation() {
 }
 
 function navigate(page) {
+  const previousPage=state.activePage;
+  if(previousPage!==page)disposePageViews(previousPage);
   state.activePage=page;
   $$('.nav-item[data-page]').forEach(button=>button.classList.toggle('active',button.dataset.page===page));
   $$('[data-page-panel]').forEach(panel=>panel.classList.toggle('active',panel.dataset.pagePanel===page));
   $('#sidebar').classList.remove('open');
+  createPageViews(page);
   requestAnimationFrame(()=>{
     Object.values(views).forEach(view=>view?.resize());
   });
@@ -266,6 +357,7 @@ function applyShape() {
   if (state.meshMode==='imported') {
     state.meshMode='fitted';
     state.importedRoot=null; state.importedAnimations=[]; state.importedPointCloud=false;
+    importedBuildPreview=null; importedExportPreview=null;
     updateSourceChoice();
   }
   createAllAvatars();
@@ -565,9 +657,9 @@ async function importMeshFile(file) {
     state.importedFileName=file.name;
     state.meshMode='imported';
     updateSourceChoice();
-    const buildClone=cloneImported(root),exportClone=cloneImported(root);
-    setViewModel(views.build,buildClone);
-    setViewModel(views.export,exportClone);
+    importedBuildPreview=cloneImported(root);
+    importedExportPreview=cloneImported(root);
+    setViewModel(views.build,importedBuildPreview);
     $('#exportCharacterName').textContent=state.projectName;
     const hasSkin=root.getObjectByProperty('isSkinnedMesh',true);
     if(animations.length) {
@@ -879,7 +971,8 @@ async function init() {
   initTopActions();
   initExport();
   state.projectName=$('#projectName').value;
-  createViews();
+  createPageViews('build');
+  createAllAvatars();
   setShapeUI(state.shape);
   updateSourceChoice();
   renderCustomMotionCards();

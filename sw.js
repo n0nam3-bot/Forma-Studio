@@ -1,4 +1,4 @@
-const CACHE_NAME = 'forma-studio-shell-v2';
+const CACHE_NAME = 'forma-studio-shell-v3';
 const APP_FILES = ['./','./index.html','./bootstrap.js','./styles.css','./src/main.js','./src/model.js','./src/motion.js','./src/persistence.js'];
 const THREE_PREFIXES = [
   'https://cdn.jsdelivr.net/npm/three@0.180.0/',
