@@ -9,7 +9,7 @@
 const EDIT_W = 288;
 const EDIT_H = 432;
 const CHARACTER_HEIGHT = 1.82;
-const DEFAULT_ANGLES = { front: 0, side: 90, back: 180, threeQuarter: 45 };
+const DEFAULT_ANGLES = { front: 0, side: 90, sideFacingLeft: 90, sideFacingRight: 270, sideOpposite: 270, back: 180, threeQuarter: 45 };
 const ANGLE_OPTIONS = [0, 30, 45, 60, 90, 120, 135, 150, 180, 210, 225, 240, 270, 300, 315, 330];
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -133,7 +133,7 @@ function boundsOfMask(mask) {
 }
 
 async function analyseReference(reference, index, threshold = 48) {
-  const image = await decodeImage(reference.dataUrl);
+  const image = await decodeImage(reference.originalDataUrl || reference.dataUrl);
   const canvas = document.createElement('canvas');
   canvas.width = EDIT_W; canvas.height = EDIT_H;
   const context = canvas.getContext('2d', { willReadFrequently: true });
@@ -204,8 +204,10 @@ function getGridSettings() {
 }
 
 function estimateExtents(views) {
-  const front = views.find(view => view.reference.role === 'front') || views.reduce((best, view) => Math.abs(Math.cos(radians(view.angleDeg))) > Math.abs(Math.cos(radians(best.angleDeg))) ? view : best, views[0]);
-  const side = views.find(view => view.reference.role === 'side') || views.reduce((best, view) => Math.abs(Math.sin(radians(view.angleDeg))) > Math.abs(Math.sin(radians(best.angleDeg))) ? view : best, views[0]);
+  const front = views.find(view => view.reference.role === 'front') || views.find(view => view.reference.role === 'back') || views[0];
+  const sides = views.filter(view => ['sideFacingLeft','sideFacingRight','side','sideOpposite'].includes(view.reference.role));
+  const sidePool = sides.length ? sides : views;
+  const side = sidePool.reduce((best, view) => view.aspect > best.aspect ? view : best, sidePool[0]);
   const halfX = clamp(front.aspect * CHARACTER_HEIGHT * 0.5 * 1.045, 0.13, 0.82);
   const halfZ = clamp(side.aspect * CHARACTER_HEIGHT * 0.5 * 1.045, 0.10, 0.70);
   return { halfX, halfZ };
@@ -240,7 +242,143 @@ async function buildOccupancy(views, settings, onProgress) {
   return { occupancy, indexOf, nx, ny, nz, halfX, halfZ, dx, dy, dz, filled };
 }
 
+function createIsoSurfaceGeometry(THREE, grid, views, onProgress) {
+  const { occupancy, indexOf, nx, ny, nz, halfX, halfZ, dx, dy, dz } = grid;
+  const sx = nx + 2, sy = ny + 2, sz = nz + 2;
+  const fieldIndex = (x, y, z) => (z * sy + y) * sx + x;
+  let field = new Float32Array(sx * sy * sz);
+  for (let z = 1; z <= nz; z++) {
+    for (let y = 1; y <= ny; y++) {
+      for (let x = 1; x <= nx; x++) {
+        field[fieldIndex(x, y, z)] = occupancy[indexOf(x - 1, y - 1, z - 1)] ? 1 : 0;
+      }
+    }
+  }
+
+  // Separable [1,2,1] smoothing rounds voxel corners before polygonization.
+  const blurAxis = (input, axis) => {
+    const output = new Float32Array(input.length);
+    for (let z = 0; z < sz; z++) for (let y = 0; y < sy; y++) for (let x = 0; x < sx; x++) {
+      const coordinate = axis === 0 ? x : axis === 1 ? y : z;
+      const limit = axis === 0 ? sx : axis === 1 ? sy : sz;
+      const before = Math.max(0, coordinate - 1), after = Math.min(limit - 1, coordinate + 1);
+      const a = axis === 0 ? fieldIndex(before, y, z) : axis === 1 ? fieldIndex(x, before, z) : fieldIndex(x, y, before);
+      const b = fieldIndex(x, y, z);
+      const c = axis === 0 ? fieldIndex(after, y, z) : axis === 1 ? fieldIndex(x, after, z) : fieldIndex(x, y, after);
+      output[b] = (input[a] + 2 * input[b] + input[c]) * 0.25;
+    }
+    return output;
+  };
+  for (let pass = 0; pass < 3; pass++) {
+    field = blurAxis(field, 0);
+    field = blurAxis(field, 1);
+    field = blurAxis(field, 2);
+  }
+
+  const corners = [[0,0,0],[1,0,0],[1,1,0],[0,1,0],[0,0,1],[1,0,1],[1,1,1],[0,1,1]];
+  const tetrahedra = [[0,5,1,6],[0,1,2,6],[0,2,3,6],[0,3,7,6],[0,7,4,6],[0,4,5,6]];
+  const positions = [], indices = [], vertexMap = new Map();
+  const iso = 0.48;
+  const pointAt = (x, y, z) => [
+    -halfX + (x - 0.5) * dx,
+    (y - 0.5) * dy,
+    -halfZ + (z - 0.5) * dz,
+  ];
+  const addVertex = point => {
+    const key = point.map(value => Math.round(value * 100000)).join(',');
+    let id = vertexMap.get(key);
+    if (id !== undefined) return id;
+    id = positions.length / 3;
+    positions.push(point[0], point[1], point[2]);
+    vertexMap.set(key, id);
+    return id;
+  };
+  const interpolate = (a, b, va, vb) => {
+    const t = clamp((iso - va) / (vb - va || 1e-8), 0, 1);
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+  };
+  const emitTriangle = (a, b, c, insideCenter, outsideCenter) => {
+    const ab = [b[0]-a[0], b[1]-a[1], b[2]-a[2]];
+    const ac = [c[0]-a[0], c[1]-a[1], c[2]-a[2]];
+    const normal = [ab[1]*ac[2]-ab[2]*ac[1], ab[2]*ac[0]-ab[0]*ac[2], ab[0]*ac[1]-ab[1]*ac[0]];
+    const outward = [outsideCenter[0]-insideCenter[0], outsideCenter[1]-insideCenter[1], outsideCenter[2]-insideCenter[2]];
+    if (normal[0]*outward[0] + normal[1]*outward[1] + normal[2]*outward[2] < 0) [b,c] = [c,b];
+    indices.push(addVertex(a), addVertex(b), addVertex(c));
+  };
+
+  for (let z = 0; z < sz - 1; z++) {
+    for (let y = 0; y < sy - 1; y++) for (let x = 0; x < sx - 1; x++) {
+      const values = corners.map(([ox,oy,oz]) => field[fieldIndex(x+ox,y+oy,z+oz)]);
+      if (values.every(value => value < iso) || values.every(value => value >= iso)) continue;
+      const points = corners.map(([ox,oy,oz]) => pointAt(x+ox,y+oy,z+oz));
+      for (const tet of tetrahedra) {
+        const inside = tet.filter(i => values[i] >= iso);
+        const outside = tet.filter(i => values[i] < iso);
+        if (!inside.length || !outside.length) continue;
+        const centerOf = list => list.reduce((sum,i) => [sum[0]+points[i][0]/list.length,sum[1]+points[i][1]/list.length,sum[2]+points[i][2]/list.length],[0,0,0]);
+        const insideCenter = centerOf(inside), outsideCenter = centerOf(outside);
+        const edge = (a,b) => interpolate(points[a],points[b],values[a],values[b]);
+        if (inside.length === 1) {
+          const i=inside[0]; emitTriangle(edge(i,outside[0]),edge(i,outside[1]),edge(i,outside[2]),insideCenter,outsideCenter);
+        } else if (inside.length === 3) {
+          const o=outside[0]; emitTriangle(edge(o,inside[0]),edge(o,inside[1]),edge(o,inside[2]),insideCenter,outsideCenter);
+        } else {
+          const a=inside[0], b=inside[1], c=outside[0], d=outside[1];
+          const ac=edge(a,c), ad=edge(a,d), bc=edge(b,c), bd=edge(b,d);
+          emitTriangle(ac,bc,bd,insideCenter,outsideCenter);
+          emitTriangle(ac,bd,ad,insideCenter,outsideCenter);
+        }
+      }
+    }
+    if (z % 6 === 0) {
+      onProgress?.(0.60 + 0.18 * (z + 1) / (sz - 1), 'Building a rounded continuous character surface…');
+    }
+  }
+  if (!positions.length || !indices.length) throw new Error('No continuous surface was created. Check that the reference silhouettes overlap and are correctly oriented.');
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  const normal = geometry.getAttribute('normal');
+  const position = geometry.getAttribute('position');
+  const colors = new Float32Array(position.count * 3);
+  const uvs = new Float32Array(position.count * 2);
+  const fallback = [0.42, 0.46, 0.52];
+  for (let i = 0; i < position.count; i++) {
+    const x=position.getX(i), y=position.getY(i), z=position.getZ(i);
+    const nxv=normal.getX(i), nzv=normal.getZ(i);
+    let total=0; const colour=[0,0,0];
+    for (const view of views) {
+      const facing=nxv*view.direction.x+nzv*view.direction.z;
+      if (facing<=0.025) continue;
+      const sampled=sampleViewColor(view,x,y,z);
+      if (!sampled) continue;
+      const weight=Math.pow(facing,3.2); total+=weight;
+      colour[0]+=srgbToLinear(sampled[0])*weight;
+      colour[1]+=srgbToLinear(sampled[1])*weight;
+      colour[2]+=srgbToLinear(sampled[2])*weight;
+    }
+    const out=total>0.0001?colour.map(value=>value/total):fallback;
+    colors[i*3]=out[0]; colors[i*3+1]=out[1]; colors[i*3+2]=out[2];
+    uvs[i*2]=(x+halfX)/(2*halfX); uvs[i*2+1]=y/CHARACTER_HEIGHT;
+  }
+  geometry.setAttribute('color',new THREE.Float32BufferAttribute(colors,3));
+  geometry.setAttribute('uv',new THREE.Float32BufferAttribute(uvs,2));
+  geometry.computeBoundingBox(); geometry.computeBoundingSphere();
+  geometry.userData.formaReconstruction={
+    method:'smoothed multi-view silhouette isosurface',
+    views:views.map(view=>({role:view.reference.role,angleDeg:view.angleDeg,confidence:1})),
+    voxelResolution:{x:nx,y:ny,z:nz},filledVoxels:grid.filled,
+    vertexCount:position.count,triangleCount:indices.length/3,
+    surfaceColour:'multi-view projected vertex colour',
+    boundary:'smoothed visual hull; unseen concave surfaces are not inferred',
+  };
+  return geometry;
+}
+
 function createSurfaceGeometry(THREE, grid, views, onProgress) {
+  return createIsoSurfaceGeometry(THREE, grid, views, onProgress);
   const { occupancy, indexOf, nx, ny, nz, halfX, halfZ, dx, dy, dz } = grid;
   const vertexIndex = new Int32Array((nx + 1) * (ny + 1) * (nz + 1));
   vertexIndex.fill(-1);
@@ -499,7 +637,7 @@ function drawEditor(editorState) {
 }
 
 function maskEditorLoad(reference, editorState, status) {
-  return decodeImage(reference.dataUrl).then(image => {
+  return decodeImage(reference.originalDataUrl || reference.dataUrl).then(image => {
     const source = document.createElement('canvas');
     source.width = EDIT_W; source.height = EDIT_H;
     const context = source.getContext('2d', { willReadFrequently: true });
@@ -543,8 +681,8 @@ function makeManualMaskCanvas(mask) { return maskToDataUrl(mask); }
 
 async function buildVisualHull(THREE, references, onProgress) {
   const requiredFront = references.some(reference => reference.role === 'front');
-  const requiredSide = references.some(reference => reference.role === 'side');
-  if (!requiredFront || !requiredSide) throw new Error('Upload separate Front and Side views first. A single picture cannot define a 3D volume.');
+  const requiredSide = references.some(reference => ['sideFacingLeft','sideFacingRight','side','sideOpposite'].includes(reference.role));
+  if (!requiredFront || !requiredSide) throw new Error('Upload a Front view and at least one Side view labelled facing left or facing right. Add both side views to capture asymmetry.');
   if (references.length < 2) throw new Error('At least two different character views are required.');
   const views = [];
   for (let i = 0; i < references.length; i++) {
@@ -567,25 +705,26 @@ async function buildVisualHull(THREE, references, onProgress) {
   return geometry;
 }
 
-export function installVisualHullWorkflow(THREE, { state, getAvatars, onReconstructed }) {
+export function installVisualHullWorkflow(THREE, { state, onReconstructed }) {
   const panel = document.querySelector('.reference-panel');
   const originalFit = document.querySelector('#fitReferences');
   if (!panel || !originalFit || originalFit.dataset.visualHullInstalled === 'true') return;
   originalFit.dataset.visualHullInstalled = 'true';
   const fitButton = originalFit.cloneNode(true);
   fitButton.id = 'fitReferences';
-  fitButton.textContent = 'Reconstruct 3D mesh from views';
+  fitButton.textContent = 'Reconstruct 3D character mesh';
   originalFit.replaceWith(fitButton);
-  const { row, editor } = makeEditorUI(panel);
-  installStyles();
 
-  let editorState = { reference: null, image: null, layout: null, mask: new Uint8Array(EDIT_W * EDIT_H), mode: 'paint', cropRect: null, pointerStart: null };
-  const viewSelect = editor.querySelector('#vhViewSelect');
-  const angleSelect = editor.querySelector('#vhAngleSelect');
-  const canvas = editor.querySelector('#vhMaskCanvas');
-  const status = editor.querySelector('#vhEditorStatus');
-  const threshold = editor.querySelector('#vhThreshold');
-  const brush = editor.querySelector('#vhBrush');
+  if (!document.querySelector('#vhAutoCutoutStyles')) {
+    const style = document.createElement('style');
+    style.id = 'vhAutoCutoutStyles';
+    style.textContent = '.vh-auto-cutout-note{font-size:10px;color:#a8b6c5;margin:8px 0;padding:8px 10px;border:1px solid #354151;border-radius:8px;background:#111a24}.vh-progress{height:5px;border-radius:10px;background:#273241;overflow:hidden;margin:8px 0}.vh-progress>span{display:block;height:100%;width:0;background:#c9f36a;transition:width .15s}.vh-status{font:9px monospace;line-height:1.5;color:#aecb77;min-height:16px;margin:5px 0}';
+    document.head.appendChild(style);
+  }
+  const autoNote = document.createElement('div');
+  autoNote.className = 'vh-auto-cutout-note';
+  autoNote.textContent = 'Background removal: automatic · Front + either side direction; add both sides for asymmetry.';
+  fitButton.insertAdjacentElement('beforebegin', autoNote);
   const progressWrap = document.createElement('div');
   progressWrap.className = 'vh-progress';
   progressWrap.innerHTML = '<span id="vhProgressBar"></span>';
@@ -593,202 +732,30 @@ export function installVisualHullWorkflow(THREE, { state, getAvatars, onReconstr
   const progressText = document.createElement('div');
   progressText.className = 'vh-status';
   progressText.id = 'vhProgressText';
-  progressText.textContent = 'Upload and crop the same character from each angle. Clean masks before reconstruction for best results.';
+  progressText.textContent = 'Add a Front view and at least one Side (facing left or right) view. Add the opposite side when the character is asymmetrical.';
   progressWrap.insertAdjacentElement('afterend', progressText);
-
-  const refreshViewOptions = () => {
-    const oldValue = viewSelect.value;
-    viewSelect.innerHTML = '';
-    state.references.forEach((reference, index) => {
-      const option = document.createElement('option');
-      option.value = reference.role;
-      option.textContent = `${reference.label || reference.role} · ${defaultAngle(reference, index)}°`;
-      viewSelect.appendChild(option);
-    });
-    if (state.references.some(reference => reference.role === oldValue)) viewSelect.value = oldValue;
-    const selected = state.references.find(reference => reference.role === viewSelect.value) || state.references[0];
-    if (selected) loadSelectedView(selected);
-  };
-
-  const loadSelectedView = reference => {
-    if (!reference) return;
-    angleSelect.value = String(defaultAngle(reference, state.references.indexOf(reference)));
-    return maskEditorLoad(reference, editorState, status).catch(error => { status.textContent = error.message; });
-  };
-
-  viewSelect.addEventListener('change', () => {
-    const reference = state.references.find(item => item.role === viewSelect.value);
-    loadSelectedView(reference);
-  });
-  angleSelect.addEventListener('change', () => {
-    if (!editorState.reference) return;
-    editorState.reference.angleDeg = Number(angleSelect.value);
-    status.textContent = `${editorState.reference.label || editorState.reference.role} assigned to ${angleSelect.value}°.`;
-    refreshViewOptionsLabel();
-  });
-  function refreshViewOptionsLabel() {
-    const selected = viewSelect.value;
-    [...viewSelect.options].forEach(option => {
-      const reference = state.references.find(item => item.role === option.value);
-      if (reference) option.textContent = `${reference.label || reference.role} · ${defaultAngle(reference, state.references.indexOf(reference))}°`;
-    });
-    viewSelect.value = selected;
-  }
-
-  row.querySelector('#vhReviewToggle').addEventListener('click', () => {
-    editor.hidden = !editor.hidden;
-    if (!editor.hidden) refreshViewOptions();
-  });
-  threshold.addEventListener('input', () => { editor.querySelector('#vhThresholdOut').textContent = threshold.value; });
-  brush.addEventListener('input', () => { editor.querySelector('#vhBrushOut').textContent = brush.value; });
-
-  editor.querySelector('#vhAutoMask').addEventListener('click', () => {
-    if (!editorState.image) return;
-    const source = document.createElement('canvas'); source.width = EDIT_W; source.height = EDIT_H;
-    const context = source.getContext('2d', { willReadFrequently: true });
-    context.drawImage(editorState.image, editorState.layout.x, editorState.layout.y, editorState.layout.width, editorState.layout.height);
-    const result = autoMaskFromPixels(context.getImageData(0, 0, EDIT_W, EDIT_H).data, EDIT_W, EDIT_H, Number(threshold.value));
-    editorState.mask = result.mask;
-    editorState.maskReady = true;
-    editorState.reference.maskDataUrl = makeManualMaskCanvas(editorState.mask);
-    drawEditor(editorState);
-    try {
-      const bounds = boundsOfMask(editorState.mask);
-      status.textContent = `Auto mask ready · ${bounds.count.toLocaleString()} foreground pixels. Paint/erase or save.`;
-    } catch (error) { status.textContent = error.message; }
-  });
-
-  const setMode = mode => {
-    editorState.mode = mode;
-    editorState.cropRect = null;
-    ['vhCropMode', 'vhPaintMode', 'vhEraseMode'].forEach(id => editor.querySelector(`#${id}`).classList.toggle('active',
-      (id === 'vhCropMode' && mode === 'crop') || (id === 'vhPaintMode' && mode === 'paint') || (id === 'vhEraseMode' && mode === 'erase')));
-    editor.querySelector('#vhApplyCrop').disabled = true;
-    status.textContent = mode === 'crop' ? 'Drag around one turnaround panel, then choose Apply crop.' : `${mode === 'erase' ? 'Erase background' : 'Paint character'} on the mask.`;
-  };
-  editor.querySelector('#vhCropMode').addEventListener('click', () => setMode('crop'));
-  editor.querySelector('#vhPaintMode').addEventListener('click', () => setMode('paint'));
-  editor.querySelector('#vhEraseMode').addEventListener('click', () => setMode('erase'));
-
-  const pointerPoint = event => {
-    const rect = canvas.getBoundingClientRect();
-    return { x: clamp((event.clientX - rect.left) / rect.width * EDIT_W, 0, EDIT_W - 1), y: clamp((event.clientY - rect.top) / rect.height * EDIT_H, 0, EDIT_H - 1) };
-  };
-  canvas.addEventListener('pointerdown', event => {
-    if (!editorState.image) return;
-    event.preventDefault(); canvas.setPointerCapture(event.pointerId);
-    const point = pointerPoint(event);
-    if (editorState.mode === 'crop') {
-      editorState.pointerStart = point;
-      editorState.cropRect = { x: point.x, y: point.y, width: 1, height: 1 };
-    } else {
-      editorState.pointerStart = point;
-      editorState.maskReady = true;
-      paintCircle(editorState.mask, point.x, point.y, Number(brush.value), editorState.mode === 'erase' ? 0 : 1);
-    }
-    drawEditor(editorState);
-  });
-  canvas.addEventListener('pointermove', event => {
-    if (!editorState.pointerStart) return;
-    const point = pointerPoint(event);
-    if (editorState.mode === 'crop') {
-      const start = editorState.pointerStart;
-      editorState.cropRect = { x: Math.min(start.x, point.x), y: Math.min(start.y, point.y), width: Math.abs(point.x - start.x), height: Math.abs(point.y - start.y) };
-      editor.querySelector('#vhApplyCrop').disabled = editorState.cropRect.width < 8 || editorState.cropRect.height < 12;
-    } else {
-      editorState.maskReady = true;
-      paintCircle(editorState.mask, point.x, point.y, Number(brush.value), editorState.mode === 'erase' ? 0 : 1);
-    }
-    drawEditor(editorState);
-  });
-  const finishPointer = () => {
-    if (editorState.mode !== 'crop' && editorState.reference && editorState.mask) {
-      editorState.reference.maskDataUrl = maskToDataUrl(editorState.mask);
-      status.textContent = 'Mask edits auto-saved to this reference view.';
-    }
-    editorState.pointerStart = null;
-  };
-  canvas.addEventListener('pointerup', finishPointer);
-  canvas.addEventListener('pointercancel', finishPointer);
-
-  editor.querySelector('#vhApplyCrop').addEventListener('click', async () => {
-    const rect = editorState.cropRect;
-    if (!rect || !editorState.image || rect.width < 8 || rect.height < 12) return;
-    const layout = editorState.layout;
-    const left = clamp((rect.x - layout.x) / layout.scale, 0, editorState.image.naturalWidth);
-    const top = clamp((rect.y - layout.y) / layout.scale, 0, editorState.image.naturalHeight);
-    const right = clamp((rect.x + rect.width - layout.x) / layout.scale, 0, editorState.image.naturalWidth);
-    const bottom = clamp((rect.y + rect.height - layout.y) / layout.scale, 0, editorState.image.naturalHeight);
-    const cropWidth = Math.max(2, right - left), cropHeight = Math.max(2, bottom - top);
-    const cropped = document.createElement('canvas');
-    cropped.width = Math.round(cropWidth); cropped.height = Math.round(cropHeight);
-    cropped.getContext('2d').drawImage(editorState.image, left, top, cropWidth, cropHeight, 0, 0, cropped.width, cropped.height);
-    editorState.reference.dataUrl = cropped.toDataURL('image/png');
-    editorState.reference.maskDataUrl = null;
-    editorState.maskReady = false;
-    updateReferenceCard(editorState.reference);
-    await loadSelectedView(editorState.reference);
-    status.textContent = 'Panel cropped. Run Auto mask, then save the mask.';
-    setMode('paint');
-  });
-
-  editor.querySelector('#vhInvertMask').addEventListener('click', () => {
-    if (!editorState.mask) return;
-    editorState.maskReady = true;
-    for (let i = 0; i < editorState.mask.length; i++) editorState.mask[i] = editorState.mask[i] ? 0 : 1;
-    if (editorState.reference) editorState.reference.maskDataUrl = maskToDataUrl(editorState.mask);
-    drawEditor(editorState);
-    status.textContent = 'Mask inverted. Save only if the character is green and the background is red.';
-  });
-  editor.querySelector('#vhClearMask').addEventListener('click', () => {
-    editorState.mask.fill(0); editorState.maskReady = true;
-    if (editorState.reference) editorState.reference.maskDataUrl = maskToDataUrl(editorState.mask);
-    drawEditor(editorState); status.textContent = 'Mask cleared. Use Paint to mark the character, or Auto mask.';
-  });
-  editor.querySelector('#vhSaveMask').addEventListener('click', () => {
-    if (!editorState.reference) return;
-    try {
-      const bounds = boundsOfMask(editorState.mask);
-      editorState.reference.maskDataUrl = maskToDataUrl(editorState.mask);
-      status.textContent = `Saved silhouette · ${bounds.count.toLocaleString()} pixels. This mask will be used for 3D reconstruction.`;
-    } catch (error) { status.textContent = error.message; }
-  });
 
   fitButton.addEventListener('click', async () => {
     if (fitButton.disabled) return;
     fitButton.disabled = true;
-    fitButton.textContent = 'Reconstructing actual 3D volume…';
+    fitButton.textContent = 'Reconstructing rounded 3D surface…';
     const bar = document.querySelector('#vhProgressBar');
     const setProgress = (value, message) => {
       if (bar) bar.style.width = `${Math.round(value * 100)}%`;
       progressText.textContent = `${Math.round(value * 100)}% · ${message}`;
     };
     try {
-      const references = state.references;
-      const geometry = await buildVisualHull(THREE, references, setProgress);
-      onProgressComplete(setProgress);
+      const geometry = await buildVisualHull(THREE, state.references, setProgress);
       onReconstructed(geometry);
       const info = geometry.userData.formaReconstruction;
-      progressText.textContent = `Complete · ${info.views.length} views · ${info.vertexCount.toLocaleString()} vertices · ${info.triangleCount.toLocaleString()} triangles.`;
-      status.textContent = 'Reconstructed mesh applied to the character and its 22-bone rig.';
+      setProgress(1, `Complete · ${info.views.length} views · ${info.vertexCount.toLocaleString()} vertices · ${info.triangleCount.toLocaleString()} triangles.`);
+      toast('Rounded 3D surface reconstructed and bound to the character rig. Review the silhouette in the viewport.', 'success', 6500);
     } catch (error) {
       progressText.textContent = `Reconstruction stopped · ${error.message}`;
-      status.textContent = error.message;
+      toast(error.message || 'Could not reconstruct this character.', 'error', 6500);
     } finally {
       fitButton.disabled = false;
-      fitButton.textContent = 'Reconstruct 3D mesh from views';
+      fitButton.textContent = 'Reconstruct 3D character mesh';
     }
   });
-
-  function onProgressComplete(setProgress) { setProgress(1, 'Reconstruction complete.'); }
-  refreshViewOptions();
-
-  // The main uploader rebuilds #referenceGrid after each image is selected.
-  // Keep the angle selector in sync rather than requiring the user to close and
-  // reopen the review panel before the new view becomes available.
-  const referenceGrid = document.querySelector('#referenceGrid');
-  if (referenceGrid && typeof MutationObserver !== 'undefined') {
-    const referenceObserver = new MutationObserver(() => refreshViewOptions());
-    referenceObserver.observe(referenceGrid, { childList: true });
-  }
 }

@@ -1,3 +1,6 @@
+import { autoCutoutDataUrl } from './reference-cutout.js?v=8';
+import { installVisualHullWorkflow, applyVisualHullToAvatar } from './visual-hull.js?v=9';
+import './skeleton-helper-compat.js';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -19,10 +22,12 @@ const $ = (selector, root=document) => root.querySelector(selector);
 const $$ = (selector, root=document) => [...root.querySelectorAll(selector)];
 const state = {
   shape:{...DEFAULT_SHAPE},
+  visualHullGeometry:null,
   references:[],
   referenceSlots:[
     {role:'front',label:'Front',required:true},
-    {role:'side',label:'Side',required:true},
+    {role:'sideFacingLeft',label:'Side (facing left)',required:false},
+    {role:'sideFacingRight',label:'Side (facing right)',required:false},
     {role:'back',label:'Back',required:false},
     {role:'threeQuarter',label:'3/4 view',required:false},
   ],
@@ -170,6 +175,7 @@ function createAllAvatars() {
   sourceAvatar=createHumanoid(state.shape,{neutral:true,name:'SourceMotionRig',geometryOverride:sharedGeometry});
   resultAvatar=createHumanoid(state.shape,{name:'ResultCharacter',geometryOverride:sharedGeometry});
   exportAvatar=createHumanoid(state.shape,{name:'ExportCharacter',geometryOverride:sharedGeometry});
+  if(state.visualHullGeometry){[buildAvatar,rigAvatar,sourceAvatar,resultAvatar,exportAvatar].forEach(avatar=>applyVisualHullToAvatar(THREE,avatar,state.visualHullGeometry));}
   if (views.build) setViewModel(views.build,buildAvatar.root);
   if (views.rig) setViewModel(views.rig,rigAvatar.root);
   if (views.source) setViewModel(views.source,sourceAvatar.root);
@@ -460,11 +466,11 @@ function renderReferenceGrid() {
       if(file.size>20*1024*1024){toast('Choose an image smaller than 20 MB.','error');input.value='';return;}
       if(!isSupportedReferenceImage(file)){toast('Choose a supported image (PNG, JPG, WebP or AVIF).','error');input.value='';return;}
       try {
-        const dataUrl=await readFileAsDataURL(file);
+        const cutout=await autoCutoutDataUrl(await readFileAsDataURL(file)); const dataUrl=cutout.dataUrl;
         state.references=state.references.filter(item=>item.role!==slot.role);
-        state.references.push({role:slot.role,label:slot.label,name:file.name,dataUrl});
+        state.references.push({role:slot.role,label:slot.label,name:file.name,dataUrl,originalDataUrl:cutout.originalDataUrl,maskDataUrl:cutout.maskDataUrl});
         renderReferenceGrid();
-        toast(`${slot.label} reference added locally. No upload was made.`);
+        toast(`${slot.label} added locally with automatic background removal. No upload was made.`);
       } catch(error){toast(error.message,'error');}
     });
     label.appendChild(input);
@@ -486,7 +492,7 @@ function renderReferenceGrid() {
       const file=event.dataTransfer.files?.[0];
       if(!file || !isSupportedReferenceImage(file))return;
       if(file.size>20*1024*1024){toast('Choose an image smaller than 20 MB.','error');return;}
-      try{const dataUrl=await readFileAsDataURL(file);state.references=state.references.filter(item=>item.role!==slot.role);state.references.push({role:slot.role,label:slot.label,name:file.name,dataUrl});renderReferenceGrid();toast(`${slot.label} reference added locally.`);}catch(error){toast(error.message,'error');}
+      try{const dataUrl=await readFileAsDataURL(file);state.references=state.references.filter(item=>item.role!==slot.role);state.references.push({role:slot.role,label:slot.label,name:file.name,dataUrl,originalDataUrl:cutout.originalDataUrl,maskDataUrl:cutout.maskDataUrl});renderReferenceGrid();toast(`${slot.label} reference added locally.`);}catch(error){toast(error.message,'error');}
     });
     grid.appendChild(label);
   }
@@ -862,9 +868,19 @@ async function restoreProject(project) {
   $('#projectName').value=state.projectName;
   state.shape={...DEFAULT_SHAPE,...project.shape};
   state.references=Array.isArray(project.references)?project.references:[];
-  state.referenceSlots=Array.isArray(project.referenceSlots)?project.referenceSlots:[
-    {role:'front',label:'Front',required:true},{role:'side',label:'Side',required:true},{role:'back',label:'Back',required:false},{role:'threeQuarter',label:'3/4 view',required:false},
-  ];
+  state.references.forEach(reference=>{
+    if(reference.role==='sideOpposite'||reference.role==='sideFacingRight'||(reference.role==='side'&&Number(reference.angleDeg)===270)){reference.role='sideFacingRight';reference.label='Side (facing right)';reference.angleDeg=270;}
+    else if(reference.role==='side'||reference.role==='sideFacingLeft'){reference.role='sideFacingLeft';reference.label='Side (facing left)';if(!Number.isFinite(Number(reference.angleDeg)))reference.angleDeg=90;}
+  });
+  await Promise.all(state.references.map(async reference=>{
+    if(!reference.originalDataUrl){const cutout=await autoCutoutDataUrl(reference.dataUrl);reference.dataUrl=cutout.dataUrl;reference.originalDataUrl=cutout.originalDataUrl;reference.maskDataUrl=reference.maskDataUrl||cutout.maskDataUrl;}
+  }));
+state.referenceSlots=[
+      {role:'front',label:'Front',required:true},
+      {role:'sideFacingLeft',label:'Side (facing left)',required:false},
+      {role:'sideFacingRight',label:'Side (facing right)',required:false},
+      ...state.referenceSlots.filter(slot=>!['side','sideOpposite','sideFacingLeft','sideFacingRight','front'].includes(slot.role))
+    ];
   state.customMotions=Array.isArray(project.customMotions)?project.customMotions:[];
   state.baseMotion=project.baseMotion||'Idle';state.overlayMotion=project.overlayMotion||'';state.overlayMask=project.overlayMask||'arms';state.blendWeight=Number(project.blendWeight??.65);
   state.meshMode='fitted';state.importedRoot=null;state.importedAnimations=[];state.importedPointCloud=false;
@@ -965,6 +981,24 @@ async function init() {
   initShapeControls();
   initRigControls();
   initReferences();
+  try {
+    installVisualHullWorkflow(THREE, {
+      state,
+      onReconstructed: geometry => {
+        state.visualHullGeometry=geometry;
+        [buildAvatar,rigAvatar,sourceAvatar,resultAvatar,exportAvatar].filter(Boolean).forEach(avatar=>applyVisualHullToAvatar(THREE,avatar,geometry));
+        updateSourceChoice();
+        $('#modelSourceLabel').textContent='MULTI-VIEW 3D MESH · SKINNED';
+        const info=geometry.userData.formaReconstruction||{};
+        $('#meshStats').textContent=`${Number(info.vertexCount||0).toLocaleString()} VERTICES · ${Number(info.triangleCount||0).toLocaleString()} TRIANGLES`;
+        $('#viewportHint').textContent='Rounded 3D surface reconstructed from direction-labelled reference silhouettes';
+        toast('Rounded multi-view 3D surface reconstructed and bound to the character rig. Review the shape before export.','success',7000);
+      }
+    });
+  } catch (error) {
+    console.error('Visual-hull tools could not initialize:', error);
+    toast(`Reconstruction tools unavailable: ${error?.message||error}`, 'error', 8000);
+  }
   initMeshImport();
   initCameraControls();
   initMotionUI();

@@ -8,6 +8,8 @@
   <title>Forma Studio — Character Lab</title>
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
   <link rel="stylesheet" href="./styles.css" />
+<link rel="stylesheet" href="./workspace-ui.css?v=4">
+<script defer src="./workspace-ui.js?v=4"></script>
 </head>
 <body>
   <div class="app-shell">
@@ -82,7 +84,7 @@
                   <span class="slot-add">＋</span><strong>3/4 view</strong><small>Optional</small>
                 </label>
               </div>
-              <button id="fitReferences" class="button button-outline full-width fit-reference-button" type="button">Fit proportions from views <span>↗</span></button>
+              <button id="fitReferences" class="button button-outline full-width fit-reference-button" type="button">Reconstruct 3D mesh from views <span>↗</span></button>
               <div class="extra-reference-row">
                 <button id="addReference" class="text-button" type="button">＋ Add another angle</button>
                 <span>Up to 8 images</span>
@@ -94,13 +96,13 @@
               <div class="divider"></div>
               <div class="panel-heading compact-heading"><div><span class="eyebrow">02 — MODEL SOURCE</span><h2>Choose a starting point</h2></div></div>
               <div class="source-choice selected" data-source="fitted">
-                <span class="radio-dot"></span><div><strong>Fit a humanoid from proportions</strong><p>Builds an editable, rigged character that you refine against the uploaded views.</p></div><span class="source-tag">BROWSER</span>
+                <span class="radio-dot"></span><div><strong>Reconstruct from reference views</strong><p>Builds a closed 3D visual hull by intersecting cleaned silhouettes from multiple camera angles.</p></div><span class="source-tag">BROWSER</span>
               </div>
               <label class="source-choice import-choice" for="meshImport">
                 <span class="radio-dot"></span><div><strong>Import a reconstructed mesh</strong><p>Bring in a GLB/GLTF, OBJ or PLY created in Blender, Meshroom or another tool.</p></div><span class="source-tag">MESH</span>
                 <input id="meshImport" type="file" accept=".glb,.gltf,.obj,.ply,model/gltf-binary,model/gltf+json" hidden />
               </label>
-              <div class="notice-box"><strong>Important:</strong> two images do not contain enough information to recover hidden geometry or photo textures. This fitting mode creates a clean, editable base mesh; it is not a neural scan or Gaussian-splat conversion.</div>
+              <div class="notice-box"><strong>Important:</strong> Backgrounds are removed automatically when images are added. Label side profiles by the direction the character faces: left or right. Both can be supplied for asymmetrical characters. The mesh is generated as a rounded continuous surface from the silhouettes; hidden concave details and clothing depth still need true multi-view geometry or local neural reconstruction.</div>
             </section>
 
             <section class="panel viewport-panel">
