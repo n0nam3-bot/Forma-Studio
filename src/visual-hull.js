@@ -161,7 +161,7 @@ async function analyseReference(reference, index, threshold = 48) {
   const angleDeg = defaultAngle(reference, index);
   reference.angleDeg = angleDeg;
   return {
-    reference, image, pixels: sourceImage.data, mask, bounds,
+    reference, image, pixels: sourceImage.data, colourPixels: paddedColours(sourceImage.data, mask, EDIT_W, EDIT_H), mask, bounds,
     width: EDIT_W, height: EDIT_H,
     aspect: bounds.width / bounds.height,
     angleDeg,
@@ -189,7 +189,8 @@ function sampleViewColor(view, x, y, z) {
   const index = p.y * view.width + p.x;
   if (!view.mask[index]) return null;
   const i = index * 4;
-  return [view.pixels[i] / 255, view.pixels[i + 1] / 255, view.pixels[i + 2] / 255];
+  const source = view.colourPixels || view.pixels;
+  return [source[i] / 255, source[i + 1] / 255, source[i + 2] / 255];
 }
 
 function srgbToLinear(v) {
@@ -213,7 +214,190 @@ function estimateExtents(views) {
   return { halfX, halfZ };
 }
 
-async function buildOccupancy(views, settings, onProgress) {
+// ---------------------------------------------------------------------------------------------------------------------
+// Reconstruction quality. Pictures only describe the figure's OUTLINE from a few directions, so the raw silhouette volume is a
+// blocky box: pasting the front picture on its front face and the side pictures on its side faces gives two faces, two
+// torsos, extra arms. These steps make the pictures describe ONE shared surface instead:
+//   1. roundCrossSections  - reshape every body part of every horizontal slice from a rectangle into a rounded super-ellipse;
+//   2. paintSurface        - paint each surface point from the single best picture that can actually see it (no mixing);
+//   3. keptFraction        - a picture whose pose differs from the rest is left out instead of carving the figure away.
+// ---------------------------------------------------------------------------------------------------------------------
+const CANONICAL_ROLES = ['front', 'back', 'side', 'sideFacingLeft', 'sideFacingRight', 'sideOpposite'];
+const VIEW_CONSISTENCY = 0.96;
+
+function roundCrossSections(grid, power = 2.4) {
+  const { occupancy, nx, ny, nz, dx, dz } = grid;
+  const label = new Int32Array(nx * nz), stack = new Int32Array(nx * nz), members = new Int32Array(nx * nz);
+  let filled = 0;
+  for (let y = 0; y < ny; y++) {
+    label.fill(0);
+    let nextLabel = 0;
+    for (let z0 = 0; z0 < nz; z0++) {
+      for (let x0 = 0; x0 < nx; x0++) {
+        const start = z0 * nx + x0;
+        if (label[start] || !occupancy[(z0 * ny + y) * nx + x0]) continue;
+        nextLabel++;
+        let top = 0, count = 0, minX = x0, maxX = x0, minZ = z0, maxZ = z0;
+        stack[top++] = start; label[start] = nextLabel;
+        while (top > 0) {
+          const cell = stack[--top];
+          members[count++] = cell;
+          const cx = cell % nx, cz = (cell - cx) / nx;
+          if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
+          if (cz < minZ) minZ = cz; if (cz > maxZ) maxZ = cz;
+          if (cx > 0 && !label[cell - 1] && occupancy[(cz * ny + y) * nx + cx - 1]) { label[cell - 1] = nextLabel; stack[top++] = cell - 1; }
+          if (cx < nx - 1 && !label[cell + 1] && occupancy[(cz * ny + y) * nx + cx + 1]) { label[cell + 1] = nextLabel; stack[top++] = cell + 1; }
+          if (cz > 0 && !label[cell - nx] && occupancy[((cz - 1) * ny + y) * nx + cx]) { label[cell - nx] = nextLabel; stack[top++] = cell - nx; }
+          if (cz < nz - 1 && !label[cell + nx] && occupancy[((cz + 1) * ny + y) * nx + cx]) { label[cell + nx] = nextLabel; stack[top++] = cell + nx; }
+        }
+        const widthCells = maxX - minX + 1, depthCells = maxZ - minZ + 1;
+        if (count < 8 || widthCells < 3 || depthCells < 3) { filled += count; continue; }
+        const centerX = (minX + maxX) / 2, centerZ = (minZ + maxZ) / 2;
+        const a = widthCells / 2;
+        let b = depthCells / 2;
+        if (b * dz > 1.5 * a * dx) b = (1.5 * a * dx) / dz; // thin parts (arms, neck) cannot be much deeper than they are wide
+        for (let m = 0; m < count; m++) {
+          const cell = members[m], cx = cell % nx, cz = (cell - cx) / nx;
+          const u = Math.abs(cx - centerX) / a, v = Math.abs(cz - centerZ) / b;
+          if (Math.pow(u, power) + Math.pow(v, power) > 1) occupancy[(cz * ny + y) * nx + cx] = 0; else filled++;
+        }
+      }
+    }
+  }
+  return filled;
+}
+
+function keptFraction(grid, view) {
+  const { occupancy, nx, ny, nz, halfX, halfZ, dx, dy, dz } = grid;
+  let kept = 0, total = 0;
+  for (let z = 0; z < nz; z++) for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) {
+    if (!occupancy[(z * ny + y) * nx + x]) continue;
+    total++;
+    if (insideView(view, -halfX + (x + 0.5) * dx, (y + 0.5) * dy, -halfZ + (z + 0.5) * dz)) kept++;
+  }
+  return total ? kept / total : 0;
+}
+
+function viewAtAngle(view, angleDeg) {
+  return { ...view, angleDeg, direction: { x: Math.sin(radians(angleDeg)), z: Math.cos(radians(angleDeg)) } };
+}
+
+// Anti-aliased pixels along a picture's outline mix in the background colour; replace the outermost pixel ring with the colour just inside it.
+function paddedColours(pixels, mask, width, height, erode = 1, search = 3) {
+  const rows = new Uint8Array(width * height), inside = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    let ok = 1;
+    for (let k = -erode; k <= erode && ok; k++) { const xx = x + k; if (xx < 0 || xx >= width || !mask[y * width + xx]) ok = 0; }
+    rows[y * width + x] = ok;
+  }
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    let ok = 1;
+    for (let k = -erode; k <= erode && ok; k++) { const yy = y + k; if (yy < 0 || yy >= height || !rows[yy * width + x]) ok = 0; }
+    inside[y * width + x] = ok;
+  }
+  const out = new Uint8ClampedArray(pixels);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const i = y * width + x;
+    if (!mask[i] || inside[i]) continue;
+    let bestDistance = 1e9, bx = -1, by = -1;
+    for (let dy = -search; dy <= search; dy++) for (let dx = -search; dx <= search; dx++) {
+      const xx = x + dx, yy = y + dy;
+      if (xx < 0 || xx >= width || yy < 0 || yy >= height || !inside[yy * width + xx]) continue;
+      const distance = dx * dx + dy * dy;
+      if (distance < bestDistance) { bestDistance = distance; bx = xx; by = yy; }
+    }
+    if (bx >= 0) { const s = (by * width + bx) * 4, o = i * 4; out[o] = pixels[s]; out[o + 1] = pixels[s + 1]; out[o + 2] = pixels[s + 2]; }
+  }
+  return out;
+}
+
+function smoothSample(view, x, y, z) {
+  const theta = radians(view.angleDeg);
+  const horizontal = x * Math.cos(theta) - z * Math.sin(theta);
+  const px = view.bounds.minX + view.bounds.width / 2 + horizontal / CHARACTER_HEIGHT * view.bounds.height;
+  const py = view.bounds.minY + (1 - y / CHARACTER_HEIGHT) * view.bounds.height;
+  const nearestX = Math.round(px), nearestY = Math.round(py);
+  if (nearestX < 0 || nearestX >= view.width || nearestY < 0 || nearestY >= view.height || !view.mask[nearestY * view.width + nearestX]) return null;
+  const source = view.colourPixels || view.pixels;
+  const x0 = Math.max(0, Math.min(view.width - 2, Math.floor(px))), y0 = Math.max(0, Math.min(view.height - 2, Math.floor(py)));
+  const tx = Math.max(0, Math.min(1, px - x0)), ty = Math.max(0, Math.min(1, py - y0));
+  const rgb = [0, 0, 0];
+  for (let c = 0; c < 3; c++) {
+    const a = source[(y0 * view.width + x0) * 4 + c], b = source[(y0 * view.width + x0 + 1) * 4 + c];
+    const d = source[((y0 + 1) * view.width + x0) * 4 + c], e = source[((y0 + 1) * view.width + x0 + 1) * 4 + c];
+    rgb[c] = ((a * (1 - tx) + b * tx) * (1 - ty) + (d * (1 - tx) + e * tx) * ty) / 255;
+  }
+  return rgb;
+}
+
+function paintSurface(geometry, grid, views) {
+  const position = geometry.getAttribute('position'), normal = geometry.getAttribute('normal'), index = geometry.index.array;
+  const count = position.count;
+  const { occupancy, nx, ny, nz, halfX, halfZ, dx, dy, dz } = grid;
+  const colors = new Float32Array(count * 3), known = new Uint8Array(count);
+  const step = Math.min(dx, dz) * 0.9, reach = 2 * Math.max(halfX, halfZ) + 0.1;
+  const solidAt = (x, y, z) => {
+    const ix = Math.floor((x + halfX) / dx), iy = Math.floor(y / dy), iz = Math.floor((z + halfZ) / dz);
+    return ix >= 0 && iy >= 0 && iz >= 0 && ix < nx && iy < ny && iz < nz && occupancy[(iz * ny + iy) * nx + ix] === 1;
+  };
+  // A picture can only paint a point it can see: march from the point towards that picture's camera; solid volume in the way hides it.
+  const canSee = (view, x, y, z, nxv, nyv, nzv) => {
+    let px = x + nxv * 0.014, py = y + nyv * 0.014, pz = z + nzv * 0.014;
+    const sx = view.direction.x * step, sz = view.direction.z * step;
+    for (let travelled = 0; travelled < reach; travelled += step) {
+      px += sx; pz += sz;
+      if (solidAt(px, py, pz)) return false;
+    }
+    return true;
+  };
+  const candidates = [];
+  for (let i = 0; i < count; i++) {
+    const x = position.getX(i), y = position.getY(i), z = position.getZ(i);
+    const nxv = normal.getX(i), nyv = normal.getY(i), nzv = normal.getZ(i);
+    candidates.length = 0;
+    for (const view of views) {
+      const facing = nxv * view.direction.x + nzv * view.direction.z;
+      if (facing <= 0.3) continue;
+      const rgb = smoothSample(view, x, y, z);
+      if (rgb) candidates.push({ facing, score: facing * (view.reference.role === 'front' || view.reference.role === 'back' ? 1 : 0.78), rgb, view });
+    }
+    if (!candidates.length) continue;
+    candidates.sort((a, b) => b.score - a.score);
+    let best = -1, total = 0, r = 0, g = 0, b2 = 0;
+    for (const candidate of candidates) {
+      if (best >= 0 && candidate.score < best - 0.18) break;            // only pictures that see it about equally well may blend (narrow seam)
+      if (!canSee(candidate.view, x, y, z, nxv, nyv, nzv)) continue;
+      if (best < 0) best = candidate.score;
+      const weight = Math.pow(Math.max(0, 1 - (best - candidate.score) / 0.18), 2);
+      total += weight;
+      r += srgbToLinear(candidate.rgb[0]) * weight; g += srgbToLinear(candidate.rgb[1]) * weight; b2 += srgbToLinear(candidate.rgb[2]) * weight;
+    }
+    if (total > 0) { colors[i * 3] = r / total; colors[i * 3 + 1] = g / total; colors[i * 3 + 2] = b2 / total; known[i] = 1; }
+  }
+  // Points no picture could see (top of the head, soles, hidden folds) take the colour of their painted neighbours.
+  let pending = 0;
+  for (let i = 0; i < count; i++) if (!known[i]) pending++;
+  for (let pass = 0; pass < 40 && pending > 0; pass++) {
+    const sum = new Float32Array(count * 3), hits = new Uint16Array(count);
+    for (let t = 0; t < index.length; t += 3) {
+      for (let e = 0; e < 3; e++) {
+        const a = index[t + e], b = index[t + (e + 1) % 3];
+        if (known[a] && !known[b]) { sum[b * 3] += colors[a * 3]; sum[b * 3 + 1] += colors[a * 3 + 1]; sum[b * 3 + 2] += colors[a * 3 + 2]; hits[b]++; }
+        else if (known[b] && !known[a]) { sum[a * 3] += colors[b * 3]; sum[a * 3 + 1] += colors[b * 3 + 1]; sum[a * 3 + 2] += colors[b * 3 + 2]; hits[a]++; }
+      }
+    }
+    let progressed = 0;
+    for (let i = 0; i < count; i++) {
+      if (!known[i] && hits[i]) { colors[i * 3] = sum[i * 3] / hits[i]; colors[i * 3 + 1] = sum[i * 3 + 1] / hits[i]; colors[i * 3 + 2] = sum[i * 3 + 2] / hits[i]; known[i] = 2; progressed++; }
+    }
+    pending -= progressed;
+    if (!progressed) break;
+  }
+  for (let i = 0; i < count; i++) if (!known[i]) { colors[i * 3] = 0.42; colors[i * 3 + 1] = 0.46; colors[i * 3 + 2] = 0.52; }
+  return colors;
+}
+
+async function buildOccupancy(views, settings, onProgress, options = {}) {
   const { nx, ny, nz } = settings;
   const { halfX, halfZ } = estimateExtents(views);
   const dx = 2 * halfX / nx, dy = CHARACTER_HEIGHT / ny, dz = 2 * halfZ / nz;
@@ -238,6 +422,7 @@ async function buildOccupancy(views, settings, onProgress) {
       await new Promise(resolve => requestAnimationFrame(resolve));
     }
   }
+  if (filled >= 500 && options.round !== false) filled = roundCrossSections({ occupancy, nx, ny, nz, dx, dz });
   if (filled < 500) throw new Error('The view masks do not overlap into a usable 3D volume. Check the view angles, crops and masks.');
   return { occupancy, indexOf, nx, ny, nz, halfX, halfZ, dx, dy, dz, filled };
 }
@@ -274,6 +459,7 @@ function createIsoSurfaceGeometry(THREE, grid, views, onProgress) {
     field = blurAxis(field, 1);
     field = blurAxis(field, 2);
   }
+  for (let pass = 0; pass < 2; pass++) field = blurAxis(field, 1); // extra vertical smoothing hides slice-to-slice ridges
 
   const corners = [[0,0,0],[1,0,0],[1,1,0],[0,1,0],[0,0,1],[1,0,1],[1,1,1],[0,1,1]];
   const tetrahedra = [[0,5,1,6],[0,1,2,6],[0,2,3,6],[0,3,7,6],[0,7,4,6],[0,4,5,6]];
@@ -342,27 +528,9 @@ function createIsoSurfaceGeometry(THREE, grid, views, onProgress) {
   geometry.computeVertexNormals();
   const normal = geometry.getAttribute('normal');
   const position = geometry.getAttribute('position');
-  const colors = new Float32Array(position.count * 3);
+  const colors = paintSurface(geometry, grid, views);
   const uvs = new Float32Array(position.count * 2);
-  const fallback = [0.42, 0.46, 0.52];
-  for (let i = 0; i < position.count; i++) {
-    const x=position.getX(i), y=position.getY(i), z=position.getZ(i);
-    const nxv=normal.getX(i), nzv=normal.getZ(i);
-    let total=0; const colour=[0,0,0];
-    for (const view of views) {
-      const facing=nxv*view.direction.x+nzv*view.direction.z;
-      if (facing<=0.025) continue;
-      const sampled=sampleViewColor(view,x,y,z);
-      if (!sampled) continue;
-      const weight=Math.pow(facing,3.2); total+=weight;
-      colour[0]+=srgbToLinear(sampled[0])*weight;
-      colour[1]+=srgbToLinear(sampled[1])*weight;
-      colour[2]+=srgbToLinear(sampled[2])*weight;
-    }
-    const out=total>0.0001?colour.map(value=>value/total):fallback;
-    colors[i*3]=out[0]; colors[i*3+1]=out[1]; colors[i*3+2]=out[2];
-    uvs[i*2]=(x+halfX)/(2*halfX); uvs[i*2+1]=y/CHARACTER_HEIGHT;
-  }
+  for (let i = 0; i < position.count; i++) { uvs[i*2]=(position.getX(i)+halfX)/(2*halfX); uvs[i*2+1]=position.getY(i)/CHARACTER_HEIGHT; }
   geometry.setAttribute('color',new THREE.Float32BufferAttribute(colors,3));
   geometry.setAttribute('uv',new THREE.Float32BufferAttribute(uvs,2));
   geometry.computeBoundingBox(); geometry.computeBoundingSphere();
@@ -692,20 +860,42 @@ async function buildVisualHull(THREE, references, onProgress) {
     if (!reference.maskDataUrl) reference.maskDataUrl = maskToDataUrl(view.mask);
     onProgress?.(0.08 * (i + 1) / references.length, `Preparing ${reference.label || reference.role} view…`);
   }
-  const uniqueAngles = new Set(views.map(view => Math.round(view.angleDeg / 10) * 10));
-  if (uniqueAngles.size < 2) throw new Error('Your view angles are duplicates. Set Front to 0°, Side to 90°, and assign the other angles in the mask editor.');
+  const canonical = views.filter(view => CANONICAL_ROLES.includes(view.reference.role));
+  const extras = views.filter(view => !CANONICAL_ROLES.includes(view.reference.role));
+  const uniqueAngles = new Set(canonical.map(view => Math.round(view.angleDeg / 10) * 10));
+  if (uniqueAngles.size < 2) throw new Error('Your view angles are duplicates. Set Front to 0° and Side to 90°.');
   const settings = getGridSettings();
-  const grid = await buildOccupancy(views, settings, onProgress);
+  const grid = await buildOccupancy(canonical, settings, onProgress, { round: false });
+  // Front, side and back pictures define the volume. Any extra angle (3/4 etc.) must agree with that volume to be used, and then only
+  // for colour: a picture with a different pose would otherwise carve parts of the figure away.
+  const colourViews = [...canonical], ignoredViews = [];
+  for (const extra of extras) {
+    const assumed = extra.angleDeg;
+    const options = [assumed, (360 - assumed) % 360].filter((angle, i, list) => list.indexOf(angle) === i);
+    let best = null;
+    for (const angle of options) {
+      const candidate = viewAtAngle(extra, angle), consistency = keptFraction(grid, candidate);
+      if (!best || consistency > best.consistency) best = { candidate, consistency, angle };
+    }
+    if (best.consistency >= VIEW_CONSISTENCY) { extra.reference.angleDeg = best.angle; colourViews.push(best.candidate); }
+    else ignoredViews.push({ role: extra.reference.role, label: extra.reference.label || extra.reference.role, consistency: Number(best.consistency.toFixed(3)) });
+  }
+  onProgress?.(0.6, 'Rounding the blocky silhouette volume into body-like cross-sections…');
+  grid.filled = roundCrossSections(grid);
+  if (grid.filled < 500) throw new Error('The view masks do not overlap into a usable 3D volume. Check the view angles, crops and masks.');
   await new Promise(resolve => requestAnimationFrame(resolve));
-  const geometry = createSurfaceGeometry(THREE, grid, views, onProgress);
+  const geometry = createSurfaceGeometry(THREE, grid, colourViews, onProgress);
   onProgress?.(0.82, 'Binding the reconstructed surface to the humanoid rig…');
-  geometry.userData.formaReconstruction.sourceViewCount = views.length;
-  geometry.userData.formaReconstruction.angles = views.map(view => view.angleDeg);
-  geometry.userData.formaReconstruction.boundary = 'visual-hull; unseen concave surfaces are not inferred';
+  const info = geometry.userData.formaReconstruction;
+  info.sourceViewCount = views.length;
+  info.angles = colourViews.map(view => view.angleDeg);
+  info.ignoredViews = ignoredViews;
+  info.surfaceColour = 'one best picture per surface point (no blending across pictures)';
+  info.boundary = 'rounded visual hull; unseen concave surfaces are not inferred';
   return geometry;
 }
 
-export function installVisualHullWorkflow(THREE, { state, onReconstructed }) {
+export function installVisualHullWorkflow(THREE, { state, onReconstructed, notify }) {
   const panel = document.querySelector('.reference-panel');
   const originalFit = document.querySelector('#fitReferences');
   if (!panel || !originalFit || originalFit.dataset.visualHullInstalled === 'true') return;
@@ -748,11 +938,13 @@ export function installVisualHullWorkflow(THREE, { state, onReconstructed }) {
       const geometry = await buildVisualHull(THREE, state.references, setProgress);
       onReconstructed(geometry);
       const info = geometry.userData.formaReconstruction;
-      setProgress(1, `Complete · ${info.views.length} views · ${info.vertexCount.toLocaleString()} vertices · ${info.triangleCount.toLocaleString()} triangles.`);
-      toast('Rounded 3D surface reconstructed and bound to the character rig. Review the silhouette in the viewport.', 'success', 6500);
+      const left = (info.ignoredViews || []).map(item => item.label);
+      const leftNote = left.length ? ` · Left out: ${left.join(', ')} (its pose does not match the other pictures)` : '';
+      setProgress(1, `Complete · ${info.views.length} pictures used · ${info.vertexCount.toLocaleString()} vertices · ${info.triangleCount.toLocaleString()} triangles${leftNote}.`);
+      notify?.(left.length ? `Reconstructed. Left out ${left.join(', ')}: its pose does not match the other pictures, so it would have cut parts of the figure away.` : 'Rounded 3D surface reconstructed and bound to the character rig. Review the silhouette in the viewport.', 'success', 8000);
     } catch (error) {
       progressText.textContent = `Reconstruction stopped · ${error.message}`;
-      toast(error.message || 'Could not reconstruct this character.', 'error', 6500);
+      notify?.(error.message || 'Could not reconstruct this character.', 'error', 6500);
     } finally {
       fitButton.disabled = false;
       fitButton.textContent = 'Reconstruct 3D character mesh';

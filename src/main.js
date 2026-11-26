@@ -1,5 +1,5 @@
 import { autoCutoutDataUrl } from './reference-cutout.js?v=8';
-import { installVisualHullWorkflow, applyVisualHullToAvatar } from './visual-hull.js?v=9';
+import { installVisualHullWorkflow, applyVisualHullToAvatar } from './visual-hull.js?v=10';
 import './skeleton-helper-compat.js';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -984,6 +984,7 @@ async function init() {
   try {
     installVisualHullWorkflow(THREE, {
       state,
+      notify: toast,
       onReconstructed: geometry => {
         state.visualHullGeometry=geometry;
         [buildAvatar,rigAvatar,sourceAvatar,resultAvatar,exportAvatar].filter(Boolean).forEach(avatar=>applyVisualHullToAvatar(THREE,avatar,geometry));
