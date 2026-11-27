@@ -1,11 +1,11 @@
 // Forma Studio service worker: offline caching only. It does NOT rewrite any source files
 // (the runtime patch layer was folded into the sources in R-1; see HANDOFF.md section 3).
 // RULE: bump CACHE_NAME on every release, and the ?v= of any module whose content changed.
-const CACHE_NAME = 'forma-studio-reconstruction-v10';
+const CACHE_NAME = 'forma-studio-reconstruction-v11';
 const APP_FILES = [
   './', './index.html', './bootstrap.js', './styles.css',
   './workspace-ui.css?v=4', './workspace-ui.js?v=4', './src/main.js',
-  './src/skeleton-helper-compat.js', './src/visual-hull.js?v=10',
+  './src/skeleton-helper-compat.js', './src/visual-hull.js?v=11',
   './src/reference-cutout.js?v=8', './src/model.js', './src/motion.js',
   './src/persistence.js',
 ];

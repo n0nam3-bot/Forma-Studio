@@ -228,6 +228,8 @@ const VIEW_CONSISTENCY = 0.96;
 function roundCrossSections(grid, power = 2.4) {
   const { occupancy, nx, ny, nz, dx, dz } = grid;
   const label = new Int32Array(nx * nz), stack = new Int32Array(nx * nz), members = new Int32Array(nx * nz);
+  const limb = new Uint8Array(occupancy.length);   // 1 = cell belongs to a thin part (arm, hand, neck)
+  grid.limb = limb;
   let filled = 0;
   for (let y = 0; y < ny; y++) {
     label.fill(0);
@@ -254,12 +256,13 @@ function roundCrossSections(grid, power = 2.4) {
         if (count < 8 || widthCells < 3 || depthCells < 3) { filled += count; continue; }
         const centerX = (minX + maxX) / 2, centerZ = (minZ + maxZ) / 2;
         const a = widthCells / 2;
-        let b = depthCells / 2;
-        if (b * dz > 1.5 * a * dx) b = (1.5 * a * dx) / dz; // thin parts (arms, neck) cannot be much deeper than they are wide
+        let b = depthCells / 2, thin = false;
+        if (b * dz > 1.5 * a * dx) { b = (1.5 * a * dx) / dz; thin = true; } // thin parts (arms, neck) cannot be much deeper than they are wide
         for (let m = 0; m < count; m++) {
           const cell = members[m], cx = cell % nx, cz = (cell - cx) / nx;
           const u = Math.abs(cx - centerX) / a, v = Math.abs(cz - centerZ) / b;
-          if (Math.pow(u, power) + Math.pow(v, power) > 1) occupancy[(cz * ny + y) * nx + cx] = 0; else filled++;
+          if (Math.pow(u, power) + Math.pow(v, power) > 1) occupancy[(cz * ny + y) * nx + cx] = 0;
+          else { filled++; if (thin) limb[(cz * ny + y) * nx + cx] = 1; }
         }
       }
     }
@@ -283,7 +286,7 @@ function viewAtAngle(view, angleDeg) {
 }
 
 // Anti-aliased pixels along a picture's outline mix in the background colour; replace the outermost pixel ring with the colour just inside it.
-function paddedColours(pixels, mask, width, height, erode = 1, search = 3) {
+function paddedColours(pixels, mask, width, height, erode = 3, search = 6) {
   const rows = new Uint8Array(width * height), inside = new Uint8Array(width * height);
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
     let ok = 1;
@@ -350,16 +353,19 @@ function paintSurface(geometry, grid, views) {
     }
     return true;
   };
-  const candidates = [];
+  const candidates = [], limb = grid.limb;
   for (let i = 0; i < count; i++) {
     const x = position.getX(i), y = position.getY(i), z = position.getZ(i);
     const nxv = normal.getX(i), nyv = normal.getY(i), nzv = normal.getZ(i);
+    const lix = Math.floor((x - nxv * 0.008 + halfX) / dx), liy = Math.floor((y - nyv * 0.008) / dy), liz = Math.floor((z - nzv * 0.008 + halfZ) / dz);
+    const isThin = !!limb && lix >= 0 && liy >= 0 && liz >= 0 && lix < nx && liy < ny && liz < nz && limb[(liz * ny + liy) * nx + lix] === 1;
     candidates.length = 0;
     for (const view of views) {
+      if (isThin && view.reference.role !== 'front' && view.reference.role !== 'back') continue;
       const facing = nxv * view.direction.x + nzv * view.direction.z;
-      if (facing <= 0.3) continue;
+      if (facing <= 0.38) continue;
       const rgb = smoothSample(view, x, y, z);
-      if (rgb) candidates.push({ facing, score: facing * (view.reference.role === 'front' || view.reference.role === 'back' ? 1 : 0.78), rgb, view });
+      if (rgb) candidates.push({ facing, score: facing * (view.reference.role === 'front' || view.reference.role === 'back' ? 1 : 0.5), rgb, view });
     }
     if (!candidates.length) continue;
     candidates.sort((a, b) => b.score - a.score);
@@ -374,26 +380,45 @@ function paintSurface(geometry, grid, views) {
     }
     if (total > 0) { colors[i * 3] = r / total; colors[i * 3 + 1] = g / total; colors[i * 3 + 2] = b2 / total; known[i] = 1; }
   }
-  // Points no picture could see (top of the head, soles, hidden folds) take the colour of their painted neighbours.
-  let pending = 0;
-  for (let i = 0; i < count; i++) if (!known[i]) pending++;
-  for (let pass = 0; pass < 40 && pending > 0; pass++) {
-    const sum = new Float32Array(count * 3), hits = new Uint16Array(count);
-    for (let t = 0; t < index.length; t += 3) {
-      for (let e = 0; e < 3; e++) {
-        const a = index[t + e], b = index[t + (e + 1) % 3];
-        if (known[a] && !known[b]) { sum[b * 3] += colors[a * 3]; sum[b * 3 + 1] += colors[a * 3 + 1]; sum[b * 3 + 2] += colors[a * 3 + 2]; hits[b]++; }
-        else if (known[b] && !known[a]) { sum[a * 3] += colors[b * 3]; sum[a * 3 + 1] += colors[b * 3 + 1]; sum[a * 3 + 2] += colors[b * 3 + 2]; hits[a]++; }
-      }
-    }
-    let progressed = 0;
-    for (let i = 0; i < count; i++) {
-      if (!known[i] && hits[i]) { colors[i * 3] = sum[i * 3] / hits[i]; colors[i * 3 + 1] = sum[i * 3 + 1] / hits[i]; colors[i * 3 + 2] = sum[i * 3 + 2] / hits[i]; known[i] = 2; progressed++; }
-    }
-    pending -= progressed;
-    if (!progressed) break;
+  // Points no picture could see (top of the head, inner legs, hidden folds) take the DOMINANT colour of the painted points near them:
+  // one median colour per small cell of painted points, then the median of the nearby cells (thin outline strokes cannot smear into streaks).
+  const P = position.array, cell = 0.03, hash = new Map();
+  const keyOf = (x, y, z) => ((Math.floor(x / cell) + 512) * 1024 + (Math.floor(y / cell) + 512)) * 1024 + (Math.floor(z / cell) + 512);
+  for (let i = 0; i < count; i++) {
+    if (!known[i]) continue;
+    const key = keyOf(P[3 * i], P[3 * i + 1], P[3 * i + 2]);
+    const bucket = hash.get(key);
+    if (bucket) bucket.push(i); else hash.set(key, [i]);
   }
-  for (let i = 0; i < count; i++) if (!known[i]) { colors[i * 3] = 0.42; colors[i * 3 + 1] = 0.46; colors[i * 3 + 2] = 0.52; }
+  const reds = [], greens = [], blues = [];
+  const middle = (list) => { list.sort((a, b) => a - b); return list[list.length >> 1]; };
+  const cells = new Map();
+  for (const [key, members] of hash) {
+    reds.length = greens.length = blues.length = 0;
+    for (const j of members) { reds.push(colors[j * 3]); greens.push(colors[j * 3 + 1]); blues.push(colors[j * 3 + 2]); }
+    cells.set(key, { r: middle(reds), g: middle(greens), b: middle(blues), n: members.length });
+  }
+  for (let i = 0; i < count; i++) {
+    if (known[i]) continue;
+    const x = P[3 * i], y = P[3 * i + 1], z = P[3 * i + 2];
+    const cx = Math.floor(x / cell), cy = Math.floor(y / cell), cz = Math.floor(z / cell);
+    let found = 0;
+    reds.length = greens.length = blues.length = 0;
+    for (const radius of [0.06, 0.1, 0.16, 0.3]) {
+      const span = Math.ceil(radius / cell), limit = (radius + cell) * (radius + cell);
+      for (let ix = -span; ix <= span; ix++) for (let iy = -span; iy <= span; iy++) for (let iz = -span; iz <= span; iz++) {
+        const entry = cells.get(((cx + ix + 512) * 1024 + (cy + iy + 512)) * 1024 + (cz + iz + 512));
+        if (!entry) continue;
+        const ddx = (cx + ix + 0.5) * cell - x, ddy = (cy + iy + 0.5) * cell - y, ddz = (cz + iz + 0.5) * cell - z;
+        if (ddx * ddx + ddy * ddy + ddz * ddz > limit) continue;
+        reds.push(entry.r); greens.push(entry.g); blues.push(entry.b); found += entry.n;
+      }
+      if (found >= 8) break;
+      reds.length = greens.length = blues.length = 0; found = 0;
+    }
+    if (!reds.length) { colors[i * 3] = 0.42; colors[i * 3 + 1] = 0.46; colors[i * 3 + 2] = 0.52; continue; }
+    colors[i * 3] = middle(reds); colors[i * 3 + 1] = middle(greens); colors[i * 3 + 2] = middle(blues);
+  }
   return colors;
 }
 
@@ -446,11 +471,14 @@ function createIsoSurfaceGeometry(THREE, grid, views, onProgress) {
     for (let z = 0; z < sz; z++) for (let y = 0; y < sy; y++) for (let x = 0; x < sx; x++) {
       const coordinate = axis === 0 ? x : axis === 1 ? y : z;
       const limit = axis === 0 ? sx : axis === 1 ? sy : sz;
-      const before = Math.max(0, coordinate - 1), after = Math.min(limit - 1, coordinate + 1);
+      // Outside the grid counts as empty, so the volume always fades out before the edge and the surface closes
+      // (mirroring the edge value left the top of the head open once the volume reached the top of the grid).
+      const hasBefore = coordinate > 0, hasAfter = coordinate < limit - 1;
+      const before = hasBefore ? coordinate - 1 : 0, after = hasAfter ? coordinate + 1 : limit - 1;
       const a = axis === 0 ? fieldIndex(before, y, z) : axis === 1 ? fieldIndex(x, before, z) : fieldIndex(x, y, before);
       const b = fieldIndex(x, y, z);
       const c = axis === 0 ? fieldIndex(after, y, z) : axis === 1 ? fieldIndex(x, after, z) : fieldIndex(x, y, after);
-      output[b] = (input[a] + 2 * input[b] + input[c]) * 0.25;
+      output[b] = ((hasBefore ? input[a] : 0) + 2 * input[b] + (hasAfter ? input[c] : 0)) * 0.25;
     }
     return output;
   };

@@ -1,5 +1,5 @@
 import { autoCutoutDataUrl } from './reference-cutout.js?v=8';
-import { installVisualHullWorkflow, applyVisualHullToAvatar } from './visual-hull.js?v=10';
+import { installVisualHullWorkflow, applyVisualHullToAvatar } from './visual-hull.js?v=11';
 import './skeleton-helper-compat.js';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
